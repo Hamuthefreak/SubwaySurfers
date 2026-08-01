@@ -64,9 +64,15 @@ function main() {
     const deltaTime = now - then;
     then = now;
 
-    tickElements(gl);
+    // PATCH 1: respect global speed factor (slow-mo tutorial + webcam auto-pause)
+    const effectiveDelta = deltaTime * (window._gameSpeedFactor !== undefined ? window._gameSpeedFactor : 1.0);
 
-    drawScene(gl, deltaTime);
+    // Skip tick entirely when paused (speed = 0)
+    if (window._gameSpeedFactor !== 0) {
+      tickElements(gl);
+    }
+
+    drawScene(gl, effectiveDelta);  // PATCH 2: pass effectiveDelta instead of deltaTime
 
     requestAnimationFrame(render);
   }
@@ -294,21 +300,6 @@ function tickElements(gl) {
 
   document.getElementById("sc").innerHTML = "Score: "+Score;
 
-	document.addEventListener('keydown', function(event) {
-	    if(event.keyCode == 37) {
-	        surfer.moveLeft();
-      }
-	    else if(event.keyCode == 39) {
-	        surfer.moveRight();
-	    }
-	    else if(event.keyCode == 32){
-	    	surfer.jump();
-	    }
-	    else if(event.keyCode == 40){
-	    	surfer.duck();
-	    }
-	});
-
 	for(var i=0;i<numOfDownboards;i++){
 		if(((downboardarr[i].position[0]-surfer.position[0])**2 + 
 			(downboardarr[i].position[1]-0.5-surfer.position[1])**2 + 
@@ -390,6 +381,24 @@ function initBuffers(gl) {
     police = new Police(gl, [-1.0, -0.5, -5.0]);
     sun = new Sun(gl);
     end = new End(gl, [0.0, 1.0, -1000.0]);
+
+    // PATCH 3: keydown listener registered ONCE here instead of inside tickElements
+    // (original code re-registered it every frame — this also blocks input when paused)
+    document.addEventListener('keydown', function(event) {
+      if (window._gameSpeedFactor === 0) return; // blocked while paused by webcam
+      if(event.keyCode == 37) {
+          surfer.moveLeft();
+      }
+      else if(event.keyCode == 39) {
+          surfer.moveRight();
+      }
+      else if(event.keyCode == 32){
+      	surfer.jump();
+      }
+      else if(event.keyCode == 40){
+      	surfer.duck();
+      }
+    });
 
     for(var i=0;i<numOfCoins;i++){
       if(Math.floor((Math.random()*2) + 1) == 1){
