@@ -11,7 +11,7 @@ flyarr = [];
 bootsarr = [];
 magnetarr = [];
 Score = 0;
-textureOn = 0;
+textureOn = 1;   // FIX: start with textures ON
 grayscale = 0;
 textureprogramInfo = ''
 nontextureprogramInfo = '';
@@ -42,17 +42,18 @@ function main() {
     alert('Unable to initialize WebGL. Your browser or machine may not support it.');
     return;
   }
-  groundtexture = loadTexture(gl, '../static/ground.jpg');
-  walltexture = loadTexture(gl, '../static/wall.jpg');
-  woodtexture = loadTexture(gl, '../static/wood.jpg');
-  metaltexture = loadTexture(gl, '../static/tracks.jpg');
-  traintexture = loadTexture(gl, '../static/train.jpg');
-  skytexture = loadTexture(gl, '../static/sky.jpg');
-  redtexture = loadTexture(gl, '../static/red.jpeg');
-  bluetexture = loadTexture(gl, '../static/blue.jpg');
-  goldtexture = loadTexture(gl, '../static/gold.jpg');
-  downtexture = loadTexture(gl, '../static/down.jpg')
-  endtexture = loadTexture(gl, '../static/end.jpg')
+  // FIX: paths relative to index.html at repo root → static/ not ../static/
+  groundtexture = loadTexture(gl, 'static/ground.jpg');
+  walltexture   = loadTexture(gl, 'static/wall.jpg');
+  woodtexture   = loadTexture(gl, 'static/wood.jpg');
+  metaltexture  = loadTexture(gl, 'static/tracks.jpg');
+  traintexture  = loadTexture(gl, 'static/train.jpg');
+  skytexture    = loadTexture(gl, 'static/sky.jpg');
+  redtexture    = loadTexture(gl, 'static/red.jpeg');
+  bluetexture   = loadTexture(gl, 'static/blue.jpg');
+  goldtexture   = loadTexture(gl, 'static/gold.jpg');
+  downtexture   = loadTexture(gl, 'static/down.jpg');
+  endtexture    = loadTexture(gl, 'static/end.jpg');
   
   initBuffers(gl);
 
@@ -64,7 +65,7 @@ function main() {
     const deltaTime = now - then;
     then = now;
 
-    // PATCH 1: respect global speed factor (slow-mo tutorial + webcam auto-pause)
+    // respect global speed factor (slow-mo tutorial + webcam auto-pause)
     const effectiveDelta = deltaTime * (window._gameSpeedFactor !== undefined ? window._gameSpeedFactor : 1.0);
 
     // Skip tick entirely when paused (speed = 0)
@@ -72,7 +73,7 @@ function main() {
       tickElements(gl);
     }
 
-    drawScene(gl, effectiveDelta);  // PATCH 2: pass effectiveDelta instead of deltaTime
+    drawScene(gl, effectiveDelta);
 
     requestAnimationFrame(render);
   }
@@ -382,10 +383,9 @@ function initBuffers(gl) {
     sun = new Sun(gl);
     end = new End(gl, [0.0, 1.0, -1000.0]);
 
-    // PATCH 3: keydown listener registered ONCE here instead of inside tickElements
-    // (original code re-registered it every frame — this also blocks input when paused)
+    // keydown listener registered ONCE (not every frame)
     document.addEventListener('keydown', function(event) {
-      if (window._gameSpeedFactor === 0) return; // blocked while paused by webcam
+      if (window._gameSpeedFactor === 0) return;
       if(event.keyCode == 37) {
           surfer.moveLeft();
       }
@@ -651,11 +651,8 @@ function loadTexture(gl, url) {
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,gl.UNSIGNED_BYTE, image);
     if (isPowerOf2(image.width) && isPowerOf2(image.height)) {
-       // Yes, it's a power of 2. Generate mips.
        gl.generateMipmap(gl.TEXTURE_2D);
     } else {
-       // No, it's not a power of 2. Turn off mips and set
-       // wrapping to clamp to edge
        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
