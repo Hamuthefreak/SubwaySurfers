@@ -1,105 +1,277 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
-	<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.0/css/bootstrap.min.css">
-	<title>Subway Surf</title>
-    <link rel="stylesheet" href="../webgl.css" type="text/css">
-  	<style>
-  	canvas#glcanvas{
-  		float: left;
-  	}
-  	.btn-group{
-  		margin-left: 200px;
-  		margin-top: 100px;
-  	}
-  	</style>
-  </head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Subway Surfers — Webcam Edition</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  <body>
-    <canvas id="glcanvas" width="640" height="480"></canvas>
-  	<div class="container">
-    	<div class="jumbotron">
-    		<h1 class="display-4" id="sc"></h1>
-    	</div>
-   		<div class="btn-group" role="group" >
-			<button type="button" onclick="grayfn()" class="btn btn-dark">
-				Grayscale?
-			</button>
-			<button type="button" onclick="texture()" class="btn btn-success">
-				Textured?
-			</button>
-			<button type="button" id="mc-cam-btn" onclick="toggleWebcam()" class="btn btn-primary">
-				&#128247; Webcam Mode
-			</button>
-			<button type="button" onclick="startTutorial()" class="btn btn-warning">
-				&#127891; Tutorial
-			</button>
-		</div>
+    body {
+      background: #0a0a0f;
+      font-family: 'Inter', sans-serif;
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── TOP NAV BAR ── */
+    #top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      height: 54px;
+      background: rgba(10,10,20,0.95);
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      flex-shrink: 0;
+      z-index: 10;
+    }
+    #top-bar .logo {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 18px;
+      font-weight: 900;
+      background: linear-gradient(90deg, #f7c948, #ff6a00);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: 1px;
+    }
+    #score-display {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 22px;
+      font-weight: 700;
+      color: #f7c948;
+      text-shadow: 0 0 18px rgba(247,201,72,0.6);
+      min-width: 160px;
+      text-align: center;
+    }
+    #top-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    /* ── BUTTONS ── */
+    .btn {
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 16px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+    }
+    .btn:hover { transform: translateY(-1px); filter: brightness(1.15); }
+    .btn:active { transform: translateY(0); filter: brightness(0.9); }
+
+    .btn-ghost {
+      background: rgba(255,255,255,0.07);
+      color: #ccc;
+      border: 1px solid rgba(255,255,255,0.12);
+    }
+    .btn-ghost:hover { background: rgba(255,255,255,0.12); color: #fff; }
+
+    .btn-webcam {
+      background: linear-gradient(135deg, #1a6b3a, #23a455);
+      color: #fff;
+      box-shadow: 0 0 14px rgba(35,164,85,0.35);
+    }
+    .btn-webcam.active {
+      background: linear-gradient(135deg, #7a1a1a, #d43a3a);
+      box-shadow: 0 0 14px rgba(212,58,58,0.4);
+    }
+    .btn-tutorial {
+      background: linear-gradient(135deg, #6b4a00, #c8890a);
+      color: #fff;
+      box-shadow: 0 0 14px rgba(200,137,10,0.3);
+    }
+    .btn-icon {
+      background: rgba(255,255,255,0.06);
+      color: #aaa;
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 8px 11px;
+      font-size: 15px;
+    }
+
+    /* ── GAME AREA ── */
+    #game-wrap {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      background: #050508;
+    }
+    #glcanvas {
+      display: block;
+      border-radius: 4px;
+      box-shadow: 0 0 60px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.04);
+      max-width: 100%;
+      max-height: 100%;
+    }
+
+    /* ── BOTTOM STATUS BAR ── */
+    #bottom-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 20px;
+      height: 36px;
+      background: rgba(10,10,20,0.95);
+      border-top: 1px solid rgba(255,255,255,0.06);
+      flex-shrink: 0;
+    }
+    #bottom-bar span {
+      font-size: 11px;
+      color: rgba(255,255,255,0.3);
+      letter-spacing: 0.5px;
+    }
+    #bottom-bar kbd {
+      font-size: 10px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 4px;
+      padding: 1px 6px;
+      color: rgba(255,255,255,0.5);
+      font-family: monospace;
+    }
+
+    /* ── GRAYSCALE TOGGLE INDICATOR ── */
+    #gray-indicator {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #555;
+      display: inline-block;
+      transition: background 0.2s;
+    }
+    #gray-indicator.on { background: #fff; box-shadow: 0 0 6px #fff; }
+  </style>
+</head>
+
+<body>
+
+  <!-- TOP BAR -->
+  <div id="top-bar">
+    <div class="logo">SUBWAY SURFERS</div>
+
+    <div id="score-display">SCORE: 0</div>
+
+    <div id="top-controls">
+      <button class="btn btn-ghost" onclick="toggleGray()" title="Toggle Grayscale">
+        <span id="gray-indicator"></span> Grayscale
+      </button>
+      <button class="btn btn-tutorial" onclick="startTutorial()">
+        &#127891; Tutorial
+      </button>
+      <button class="btn btn-webcam" id="mc-cam-btn" onclick="toggleWebcam()">
+        &#128247; Webcam
+      </button>
     </div>
-  </body>
+  </div>
 
-  <script src="src/gl-matrix.js"></script>
-  <script src="src/bg.js"></script> 
-  <script src="src/end.js"></script> 
-  <script src="src/ground.js"></script>
-  <script src="src/track.js"></script>
-  <script src="src/surfer.js"></script>
-  <script src="src/police.js"></script>
-  <script src="src/wall.js"></script>
-  <script src="src/coin.js"></script>
-  <script src="src/downboard.js"></script>
-  <script src="src/upboard.js"></script>
-  <script src="src/cones.js"></script>
-  <script src="src/fly.js"></script>
-  <script src="src/boots.js"></script>
-  <script src="src/magnet.js"></script>
-  <script src="src/train.js"></script>
-  <script src="src/sun.js"></script>
-  <script src="src/game.js"></script>
+  <!-- GAME CANVAS -->
+  <div id="game-wrap">
+    <canvas id="glcanvas" width="640" height="480"></canvas>
+  </div>
 
-  <!-- Webcam motion layer — all UI injected by JS, zero impact on game visuals -->
-  <script src="src/motion_controller.js"></script>
-  <script src="src/tutorial.js"></script>
+  <!-- BOTTOM BAR -->
+  <div id="bottom-bar">
+    <span><kbd>&larr;</kbd><kbd>&rarr;</kbd> Move</span>
+    <span>&nbsp;&middot;&nbsp;</span>
+    <span><kbd>Space</kbd> Jump</span>
+    <span>&nbsp;&middot;&nbsp;</span>
+    <span><kbd>&darr;</kbd> Duck</span>
+  </div>
 
-  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
-  <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.0/js/bootstrap.min.js"></script>
+</body>
 
-  <script>
-    // Global speed multiplier read by game.js render loop
-    window._gameSpeedFactor = 1.0;
+<!-- Scripts -->
+<script src="src/gl-matrix.js"></script>
+<script src="src/bg.js"></script>
+<script src="src/end.js"></script>
+<script src="src/ground.js"></script>
+<script src="src/track.js"></script>
+<script src="src/surfer.js"></script>
+<script src="src/police.js"></script>
+<script src="src/wall.js"></script>
+<script src="src/coin.js"></script>
+<script src="src/downboard.js"></script>
+<script src="src/upboard.js"></script>
+<script src="src/cones.js"></script>
+<script src="src/fly.js"></script>
+<script src="src/boots.js"></script>
+<script src="src/magnet.js"></script>
+<script src="src/train.js"></script>
+<script src="src/sun.js"></script>
+<script src="src/game.js"></script>
+<script src="src/motion_controller.js"></script>
+<script src="src/tutorial.js"></script>
 
-    let webcamActive = false;
+<script>
+  window._gameSpeedFactor = 1.0;
+  let webcamActive = false;
+  let grayOn = false;
 
-    function toggleWebcam() {
-      const btn = document.getElementById('mc-cam-btn');
-      if (!webcamActive) {
-        webcamActive = true;
-        btn.innerText = '\u23F9 Stop Webcam';
-        btn.classList.replace('btn-primary', 'btn-danger');
-        MotionController.init({
-          onLeft:             () => { if(typeof surfer!=='undefined') surfer.moveLeft();  MotionController._flashGesture('\u2B05 LEFT'); },
-          onRight:            () => { if(typeof surfer!=='undefined') surfer.moveRight(); MotionController._flashGesture('\u27A1 RIGHT'); },
-          onJump:             () => { if(typeof surfer!=='undefined') surfer.jump();      MotionController._flashGesture('\u2B06 JUMP'); },
-          onDuck:             () => { if(typeof surfer!=='undefined') surfer.duck();      MotionController._flashGesture('\u2B07 DUCK'); },
-          onPause:            () => { window._gameSpeedFactor = 0; },
-          onResume:           () => { window._gameSpeedFactor = 1.0; },
-          onCalibrationDone:  () => { startTutorial(); },
-          onLowLight:         () => { MotionController._handleLowLight(); }
-        });
-      } else {
-        webcamActive = false;
-        btn.innerText = '\u{1F4F7} Webcam Mode';
-        btn.classList.replace('btn-danger', 'btn-primary');
-        MotionController.stopCamera();
-      }
-    }
+  // Route score updates to our new score display
+  const _scoreEl = document.getElementById('score-display');
+  const _observer = new MutationObserver(() => {
+    const oldEl = document.getElementById('sc');
+    if (oldEl) _scoreEl.innerText = oldEl.innerText.replace('Score:', 'SCORE:');
+  });
+  // game.js writes to #sc — we mirror it
+  // (game.js still needs its own element so we keep a hidden one)
+  const _hiddenScore = document.createElement('div');
+  _hiddenScore.id = 'sc';
+  _hiddenScore.style.display = 'none';
+  document.body.appendChild(_hiddenScore);
+  _observer.observe(_hiddenScore, { childList: true, characterData: true, subtree: true });
 
-    function startTutorial() {
-      Tutorial.start({
-        onSetSpeed: (f) => { window._gameSpeedFactor = f; },
-        onComplete: ()  => { window._gameSpeedFactor = 1.0; }
+  function toggleGray() {
+    grayOn = !grayOn;
+    document.getElementById('gray-indicator').classList.toggle('on', grayOn);
+    grayfn(); // game.js function
+  }
+
+  function toggleWebcam() {
+    const btn = document.getElementById('mc-cam-btn');
+    if (!webcamActive) {
+      webcamActive = true;
+      btn.innerHTML = '&#9209; Stop Webcam';
+      btn.classList.add('active');
+      MotionController.init({
+        onLeft:            () => { if(typeof surfer!=='undefined') surfer.moveLeft();  MotionController._flashGesture('\u2B05 LEFT'); },
+        onRight:           () => { if(typeof surfer!=='undefined') surfer.moveRight(); MotionController._flashGesture('\u27A1 RIGHT'); },
+        onJump:            () => { if(typeof surfer!=='undefined') surfer.jump();      MotionController._flashGesture('\u2B06 JUMP'); },
+        onDuck:            () => { if(typeof surfer!=='undefined') surfer.duck();      MotionController._flashGesture('\u2B07 DUCK'); },
+        onPause:           () => { window._gameSpeedFactor = 0; },
+        onResume:          () => { window._gameSpeedFactor = 1.0; },
+        onCalibrationDone: () => { startTutorial(); },
+        onLowLight:        () => { MotionController._handleLowLight(); }
       });
+    } else {
+      webcamActive = false;
+      btn.innerHTML = '&#128247; Webcam';
+      btn.classList.remove('active');
+      MotionController.stopCamera();
     }
-  </script>
+  }
+
+  function startTutorial() {
+    Tutorial.start({
+      onSetSpeed: (f) => { window._gameSpeedFactor = f; },
+      onComplete: ()  => { window._gameSpeedFactor = 1.0; }
+    });
+  }
+</script>
 </html>

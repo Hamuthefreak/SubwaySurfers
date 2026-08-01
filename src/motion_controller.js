@@ -2,16 +2,19 @@
  * motion_controller.js  —  Webcam body-motion controller for SubwaySurfers
  * Injects ALL UI as floating elements so the original game is 100% untouched.
  * Uses MediaPipe Pose for robust tracking at distance, angles & varied lighting.
+ *
+ * FIX: stopCamera() now properly releases all getUserMedia stream tracks so the
+ *      camera light turns off and subsequent init() calls don't get "already in use".
  */
 const MotionController = (function () {
 
   /* ─────────────────────────────  CONFIG  ────────────────────────────── */
   const CFG = {
-    leanThreshold:    0.045,   // shoulder X delta to trigger lane change
-    jumpThreshold:    0.05,    // shoulder Y rise to trigger jump
-    duckThreshold:    0.06,    // shoulder Y drop to trigger duck
+    leanThreshold:    0.045,
+    jumpThreshold:    0.05,
+    duckThreshold:    0.06,
     jumpEnabled:      true,
-    jumpSensitivity:  1.0,     // 0.3 (hard) → 2.5 (easy)
+    jumpSensitivity:  1.0,
     smoothingFrames:  5,
     cooldownMs:       350,
     visibilityMin:    0.50,
@@ -36,9 +39,10 @@ const MotionController = (function () {
   const CALIB_NEEDED = 45;
   const lastFired = { left:0, right:0, jump:0, duck:0 };
   let _llTimer=null;
-  // Last known live landmark data for drawing HUD
   let _lastLM = null;
   let _lastState = { xDelta:0, yRise:0, yDrop:0, action:'' };
+  // FIX: track the raw MediaStream so we can fully release it on stop
+  let _rawStream = null;
 
   /* ────────────────────────── CALLBACKS ──────────────────────────────── */
   let onLeft=()=>{}, onRight=()=>{}, onJump=()=>{}, onDuck=()=>{};
@@ -54,24 +58,64 @@ const MotionController = (function () {
     if (!videoEl) { _buildUI(); }
     _loadMediaPipe();
   }
+
   function setPreset(n){ const p=PRESETS[n]; if(!p)return; CFG.preset=n; Object.assign(CFG,p); _updateSettingsUI(); }
   function toggleJump(v){ CFG.jumpEnabled=v; }
   function setJumpSensitivity(v){ CFG.jumpSensitivity=parseFloat(v); }
   function recalibrate(){ calibrated=false; calibFrames=[]; history=[]; _showCalibOverlay(); }
-  function stopCamera(){ if(camera){ camera.stop(); active=false; } }
+
+  /**
+   * FIX: Fully stop the webcam.
+   * 1. Stop the MediaPipe Camera wrapper.
+   * 2. Stop every track on the raw getUserMedia stream → releases hardware.
+   * 3. Clear the video src so the browser forgets the stream entirely.
+   * 4. Reset _rawStream so the next init() starts fresh.
+   */
+  function stopCamera(){
+    if (camera) {
+      try { camera.stop(); } catch(e) {}
+      camera = null;
+    }
+    if (_rawStream) {
+      _rawStream.getTracks().forEach(t => t.stop());
+      _rawStream = null;
+    }
+    if (videoEl) {
+      videoEl.srcObject = null;
+    }
+    // Reset pose so it's re-created cleanly next init
+    pose = null;
+    active = false;
+    calibrated = false;
+    calibFrames = [];
+    history = [];
+    // Hide preview widgets
+    const wrap = document.getElementById('mc-preview-wrap');
+    const badge = document.getElementById('mc-status-badge');
+    if (wrap)  wrap.style.display  = 'none';
+    if (badge) badge.style.display = 'none';
+  }
 
   /* ─────────────────────────  MEDIAPIPE  ─────────────────────────────── */
   function _loadMediaPipe(){
+    // Show preview now that we're starting
+    const wrap  = document.getElementById('mc-preview-wrap');
+    const badge = document.getElementById('mc-status-badge');
+    if (wrap)  wrap.style.display  = 'block';
+    if (badge) badge.style.display = 'block';
+
     const needed = ['@mediapipe/camera_utils/camera_utils.js',
                     '@mediapipe/drawing_utils/drawing_utils.js',
                     '@mediapipe/pose/pose.js'];
     let done=0;
     needed.forEach(p=>{
+      // Avoid re-adding scripts that already loaded
+      if (document.querySelector(`script[src*="${p}"]`)) { done++; if(done===needed.length) _setupPose(); return; }
       const s=document.createElement('script');
       s.src='https://cdn.jsdelivr.net/npm/'+p;
       s.crossOrigin='anonymous';
       s.onload=()=>{ done++; if(done===needed.length) _setupPose(); };
-      s.onerror=()=>console.warn('[MC] CDN fail:',p);
+      s.onerror=()=>{ console.warn('[MC] CDN fail:',p); done++; if(done===needed.length) _setupPose(); };
       document.head.appendChild(s);
     });
   }
@@ -84,52 +128,65 @@ const MotionController = (function () {
       enableSegmentation:false, smoothSegmentation:false,
       minDetectionConfidence:0.5, minTrackingConfidence:0.5
     });
-    pose.onResults(_onPoseResults);
+    pose.onResults(_patchedOnPoseResults);
+
+    // FIX: intercept getUserMedia to capture the raw stream reference
+    const _origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async function(constraints) {
+      const stream = await _origGetUserMedia(constraints);
+      _rawStream = stream;
+      // Restore the original so we don't stack wrappers on re-init
+      navigator.mediaDevices.getUserMedia = _origGetUserMedia;
+      return stream;
+    };
+
     camera = new Camera(videoEl, {
-      onFrame: async()=>{ await pose.send({image:videoEl}); },
+      onFrame: async()=>{ if(pose) await pose.send({image:videoEl}); },
       width:320, height:240
     });
+    _calibCanvas = document.getElementById('mc-calib-canvas');
+    _calibCtx    = _calibCanvas ? _calibCanvas.getContext('2d') : null;
     _showCalibOverlay();
     camera.start();
-    active=true;
+    active = true;
   }
 
   /* ──────────────────────  POSE RESULT HANDLER  ──────────────────────── */
-  function _onPoseResults(results){
-    // Always draw debug on the overlay canvas (camera preview + optional skeleton)
+  function _patchedOnPoseResults(results){
     _drawCameraFrame(results);
-
-    if(!results.poseLandmarks || results.poseLandmarks.length<25){
-      _handleMissingPose(); return;
+    // Mirror to full-screen calib canvas if open
+    if(calibOvVisible() && _calibCtx && videoEl){
+      const W=320, H=240;
+      _calibCtx.save(); _calibCtx.translate(W,0); _calibCtx.scale(-1,1);
+      _calibCtx.drawImage(videoEl,0,0,W,H);
+      _calibCtx.restore();
+      if(results.poseLandmarks && typeof drawConnectors!=='undefined'){
+        _calibCtx.save(); _calibCtx.translate(W,0); _calibCtx.scale(-1,1);
+        drawConnectors(_calibCtx,results.poseLandmarks,POSE_CONNECTIONS,{color:'rgba(0,255,100,0.9)',lineWidth:3});
+        drawLandmarks(_calibCtx,results.poseLandmarks,{color:'#ff3d3d',lineWidth:1,radius:5});
+        _calibCtx.restore();
+      }
     }
+    if(!results.poseLandmarks||results.poseLandmarks.length<25){ _handleMissingPose(); return; }
     const lm=results.poseLandmarks;
-    const lSh=lm[11], rSh=lm[12], lHip=lm[23], rHip=lm[24], nose=lm[0];
-
-    if(lSh.visibility<CFG.visibilityMin || rSh.visibility<CFG.visibilityMin){
-      _handleMissingPose(); return;
-    }
+    const lSh=lm[11],rSh=lm[12],lHip=lm[23],rHip=lm[24],nose=lm[0];
+    if(lSh.visibility<CFG.visibilityMin||rSh.visibility<CFG.visibilityMin){ _handleMissingPose(); return; }
     const avgVis=(lSh.visibility+rSh.visibility+lHip.visibility+rHip.visibility)/4;
     if(avgVis<0.38) onLowLight();
-
     inFrame=true;
-    if(_wasMissing && CFG.autoPause){ onResume(); }
-    _wasMissing=false;
-    _lastLM=lm;
-
-    const flip = CFG.mirrorCamera ? (x=>1-x) : (x=>x);
+    if(_wasMissing&&CFG.autoPause) onResume();
+    _wasMissing=false; _lastLM=lm;
+    const flip=CFG.mirrorCamera?(x=>1-x):(x=>x);
     const frame={
-      shoulderMidX: flip((lSh.x+rSh.x)/2),
-      shoulderMidY: (lSh.y+rSh.y)/2,
-      hipMidY:      (lHip.y+rHip.y)/2,
-      headY:        nose.y
+      shoulderMidX:flip((lSh.x+rSh.x)/2),
+      shoulderMidY:(lSh.y+rSh.y)/2,
+      hipMidY:(lHip.y+rHip.y)/2,
+      headY:nose.y
     };
-
     if(!calibrated){ _accumulateCalib(frame); return; }
-
     history.push(frame);
     if(history.length>CFG.smoothingFrames) history.shift();
     if(history.length<2) return;
-
     const s=_smooth();
     _interpret(s);
     _drawHUD(s);
@@ -158,42 +215,33 @@ const MotionController = (function () {
   function _interpret(s){
     const now=Date.now();
     const xDelta=s.shoulderMidX-baseline.shoulderMidX;
-    const yRise =baseline.shoulderMidY-s.shoulderMidY;  // positive = up
-    const yDrop =s.shoulderMidY-baseline.shoulderMidY;  // positive = down
-
-    _lastState={xDelta, yRise, yDrop, action:'—'};
-
+    const yRise =baseline.shoulderMidY-s.shoulderMidY;
+    const yDrop =s.shoulderMidY-baseline.shoulderMidY;
+    _lastState={xDelta,yRise,yDrop,action:'—'};
     if(xDelta < -CFG.leanThreshold && _cd('left',now)){
       lastFired.left=now; _lastState.action='LEFT'; onLeft();
     } else if(xDelta > CFG.leanThreshold && _cd('right',now)){
       lastFired.right=now; _lastState.action='RIGHT'; onRight();
     }
-
     if(CFG.jumpEnabled && !CFG.seatedMode){
       const thresh=CFG.jumpThreshold/CFG.jumpSensitivity;
-      if(yRise>thresh && _cd('jump',now)){
-        lastFired.jump=now; _lastState.action='JUMP'; onJump();
-      }
+      if(yRise>thresh && _cd('jump',now)){ lastFired.jump=now; _lastState.action='JUMP'; onJump(); }
     }
     if(CFG.seatedMode && CFG.jumpEnabled){
       const headDrop=s.headY-baseline.headY;
       const thresh=0.04/CFG.jumpSensitivity;
-      if(headDrop>thresh && _cd('jump',now)){
-        lastFired.jump=now; _lastState.action='JUMP'; onJump();
-      }
+      if(headDrop>thresh && _cd('jump',now)){ lastFired.jump=now; _lastState.action='JUMP'; onJump(); }
     }
-    if(yDrop>CFG.duckThreshold && _cd('duck',now)){
-      lastFired.duck=now; _lastState.action='DUCK'; onDuck();
-    }
+    if(yDrop>CFG.duckThreshold && _cd('duck',now)){ lastFired.duck=now; _lastState.action='DUCK'; onDuck(); }
   }
 
   function _cd(a,now){ return (now-lastFired[a])>CFG.cooldownMs; }
 
   function _handleMissingPose(){
-    if(!_wasMissing && CFG.autoPause && inFrame){ onPause(); }
+    if(!_wasMissing&&CFG.autoPause&&inFrame) onPause();
     _wasMissing=true; inFrame=false; _lastLM=null;
     const badge=document.getElementById('mc-status-badge');
-    if(badge){ badge.innerText='\uD83D\uDFE1 No pose'; badge.style.color='#ff0'; }
+    if(badge){ badge.innerText='\uD83D\uDFE1 No pose detected'; }
   }
 
   /* ─────────────────────── SMOOTHING HELPERS ─────────────────────────── */
@@ -205,26 +253,18 @@ const MotionController = (function () {
     if(!overlayCtx) return;
     const W=overlayCanvas.width, H=overlayCanvas.height;
     overlayCtx.save();
-    // Mirror so it looks like a selfie
     overlayCtx.translate(W,0); overlayCtx.scale(-1,1);
     overlayCtx.drawImage(videoEl,0,0,W,H);
     overlayCtx.restore();
-
-    // Always draw skeleton — it helps people understand their position
     if(results.poseLandmarks && typeof drawConnectors!=='undefined'){
-      // Draw on non-mirrored space; mediapipe coords already account for mirror flag
       overlayCtx.save();
       overlayCtx.translate(W,0); overlayCtx.scale(-1,1);
-      drawConnectors(overlayCtx, results.poseLandmarks, POSE_CONNECTIONS,
-        {color:'rgba(0,255,100,0.8)', lineWidth:2});
-      drawLandmarks(overlayCtx, results.poseLandmarks,
-        {color:'#ff3d3d', lineWidth:1, radius:3});
+      drawConnectors(overlayCtx,results.poseLandmarks,POSE_CONNECTIONS,{color:'rgba(0,255,100,0.8)',lineWidth:2});
+      drawLandmarks(overlayCtx,results.poseLandmarks,{color:'#ff3d3d',lineWidth:1,radius:3});
       overlayCtx.restore();
     }
-
-    // Dim overlay when not calibrated
     if(!calibrated){
-      overlayCtx.fillStyle='rgba(0,0,0,0.3)';
+      overlayCtx.fillStyle='rgba(0,0,0,0.35)';
       overlayCtx.fillRect(0,0,W,H);
       overlayCtx.fillStyle='#0f0';
       overlayCtx.font='bold 11px monospace';
@@ -233,28 +273,18 @@ const MotionController = (function () {
     }
   }
 
-  /* ─────────────────  HUD BARS (lean / jump / duck meters) ───────────── */
+  /* ─────────────────  HUD BARS  ───────────────────────────────────────── */
   function _drawHUD(s){
     if(!overlayCtx) return;
     const W=overlayCanvas.width, H=overlayCanvas.height;
     const xDelta=s.shoulderMidX-baseline.shoulderMidX;
     const yRise =baseline.shoulderMidY-s.shoulderMidY;
     const yDrop =s.shoulderMidY-baseline.shoulderMidY;
-
-    // Update status badge
     const badge=document.getElementById('mc-status-badge');
     if(badge){
-      const action=_lastState.action;
-      const col = action==='—'?'#0f0' : '#ff0';
-      badge.style.color=col;
-      badge.innerText='\uD83D\uDFE2 '+action;
+      badge.innerText = _lastState.action==='—' ? '\uD83D\uDFE2 Tracking' : '\uD83D\uDFE1 '+_lastState.action;
     }
-
-    // Draw tiny bar charts along bottom of preview
-    const barH=5, barY=H-barH-2;
-    const midX=W/2;
-
-    // Lean bar (horizontal)
+    const barH=5, barY=H-barH-2, midX=W/2;
     overlayCtx.fillStyle='rgba(0,0,0,0.5)';
     overlayCtx.fillRect(0,barY-14,W,14);
     overlayCtx.fillStyle='#aaa';
@@ -267,27 +297,21 @@ const MotionController = (function () {
     if(xDelta<0) overlayCtx.fillRect(midX-leanPx,barY-12,leanPx,10);
     else         overlayCtx.fillRect(midX,barY-12,leanPx,10);
     overlayCtx.fillStyle='#fff';
-    overlayCtx.fillRect(midX-1,barY-14,2,14); // centre line
-
-    // Jump indicator (vertical bar bottom-right)
+    overlayCtx.fillRect(midX-1,barY-14,2,14);
     overlayCtx.fillStyle='rgba(0,0,0,0.5)';
     overlayCtx.fillRect(W-22,0,20,H);
     const jumpH=Math.min(yRise/0.15,1)*(H-4);
-    const jumpCol=yRise>CFG.jumpThreshold/CFG.jumpSensitivity?'#ff0':'#0f0';
-    overlayCtx.fillStyle=jumpCol;
-    overlayCtx.fillRect(W-18, H-2-jumpH, 6, jumpH);
+    overlayCtx.fillStyle=yRise>CFG.jumpThreshold/CFG.jumpSensitivity?'#ff0':'#0f0';
+    overlayCtx.fillRect(W-18,H-2-jumpH,6,jumpH);
     overlayCtx.fillStyle='#aaa';
     overlayCtx.font='8px monospace';
     overlayCtx.textAlign='center';
     overlayCtx.fillText('JMP',W-15,H-4);
-
-    // Duck indicator (vertical bar bottom-left)
     overlayCtx.fillStyle='rgba(0,0,0,0.5)';
     overlayCtx.fillRect(2,0,20,H);
     const duckH=Math.min(yDrop/0.15,1)*(H-4);
-    const duckCol=yDrop>CFG.duckThreshold?'#f44':'#08f';
-    overlayCtx.fillStyle=duckCol;
-    overlayCtx.fillRect(4, H-2-duckH, 6, duckH);
+    overlayCtx.fillStyle=yDrop>CFG.duckThreshold?'#f44':'#08f';
+    overlayCtx.fillRect(4,H-2-duckH,6,duckH);
     overlayCtx.fillStyle='#aaa';
     overlayCtx.font='8px monospace';
     overlayCtx.textAlign='center';
@@ -296,95 +320,117 @@ const MotionController = (function () {
 
   /* ──────────────────────────── UI BUILDER ───────────────────────────── */
   function _buildUI(){
-    // Inject global styles (all position:fixed so they float above game)
     const style=document.createElement('style');
     style.textContent=`
       #mc-preview-wrap {
-        position:fixed; top:10px; right:10px; z-index:300;
-        width:200px; border-radius:8px; overflow:hidden;
-        border:2px solid #0f0; box-shadow:0 0 12px rgba(0,255,0,0.4);
+        display:none;
+        position:fixed; top:64px; right:10px; z-index:300;
+        width:200px; border-radius:10px; overflow:hidden;
+        border:1px solid rgba(0,255,100,0.4);
+        box-shadow:0 0 20px rgba(0,255,100,0.2), 0 4px 24px rgba(0,0,0,0.6);
         background:#000;
       }
       #mc-overlay-canvas { display:block; width:200px; height:150px; }
       #mc-video { display:none; }
       #mc-status-badge {
-        position:fixed; top:168px; right:10px; z-index:301;
-        background:rgba(0,0,0,0.75); color:#0f0;
-        border-radius:0 0 6px 6px; padding:3px 10px;
-        font:bold 12px monospace; text-align:center; width:196px;
-        border:1px solid #0f0; border-top:none;
+        display:none;
+        position:fixed; top:222px; right:10px; z-index:301;
+        background:rgba(10,12,18,0.9);
+        color:#0f0;
+        border-radius:0 0 8px 8px;
+        padding:4px 10px;
+        font:bold 11px 'Inter',monospace;
+        text-align:center; width:200px;
+        border:1px solid rgba(0,255,100,0.3); border-top:none;
+        backdrop-filter:blur(4px);
       }
       #mc-lowlight-warn {
-        display:none; position:fixed; top:200px; right:10px; z-index:302;
-        background:#f90; color:#000; border-radius:4px;
-        padding:4px 10px; font:bold 12px monospace;
+        display:none; position:fixed; top:250px; right:10px; z-index:302;
+        background:rgba(255,160,0,0.9); color:#000;
+        border-radius:6px; padding:5px 12px;
+        font:bold 11px 'Inter',sans-serif;
+        backdrop-filter:blur(4px);
       }
       #mc-gesture-flash {
         position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
         z-index:350; pointer-events:none;
-        background:rgba(0,0,0,0.7); color:#0f0;
-        border:2px solid #0f0; border-radius:12px;
-        padding:12px 32px; font:bold 28px monospace;
+        background:rgba(0,0,0,0.75);
+        color:#fff;
+        border:2px solid rgba(255,255,255,0.3);
+        border-radius:16px;
+        padding:14px 36px;
+        font:bold 30px 'Orbitron','Inter',monospace;
         opacity:0; transition:opacity 0.15s;
         text-align:center;
+        backdrop-filter:blur(8px);
+        box-shadow:0 0 40px rgba(0,0,0,0.6);
       }
-      /* ── Settings panel ── */
       #mc-panel {
-        display:none; position:fixed; top:10px; right:220px; z-index:400;
-        background:#111; color:#eee; border:1px solid #0f0;
-        border-radius:8px; padding:14px 16px;
-        font:13px monospace; min-width:240px;
-        box-shadow:0 0 16px rgba(0,255,0,0.3);
+        display:none; position:fixed; top:64px; right:220px; z-index:400;
+        background:rgba(12,14,22,0.97);
+        color:#eee; border:1px solid rgba(0,255,100,0.25);
+        border-radius:12px; padding:16px 18px;
+        font:13px 'Inter',sans-serif; min-width:250px;
+        box-shadow:0 8px 32px rgba(0,0,0,0.6);
+        backdrop-filter:blur(12px);
       }
-      #mc-panel h4 { color:#0f0; margin:0 0 10px; }
-      .mc-row { display:flex; align-items:center; gap:8px; margin:5px 0; }
-      .mc-row label { width:140px; color:#aaa; }
-      .mc-row input[type=range]{ width:90px; }
-      .mc-btn { background:#0f0; color:#000; border:none; padding:5px 10px;
-        border-radius:4px; cursor:pointer; margin:4px 3px 0 0; font-weight:bold; }
-      .mc-btn-red { background:#f44; color:#fff; }
-      /* ── Calibration full-screen overlay ── */
+      #mc-panel h4 { color:#0f0; margin:0 0 12px; font-family:'Orbitron',monospace; font-size:13px; letter-spacing:1px; }
+      .mc-row { display:flex; align-items:center; gap:8px; margin:6px 0; }
+      .mc-row label { width:150px; color:#999; font-size:12px; }
+      .mc-row input[type=range]{ width:80px; accent-color:#0f0; }
+      .mc-btn {
+        background:rgba(0,255,100,0.15); color:#0f0;
+        border:1px solid rgba(0,255,100,0.3);
+        padding:6px 12px; border-radius:6px;
+        cursor:pointer; margin:4px 4px 0 0;
+        font-weight:600; font-size:12px;
+        transition:all 0.15s;
+      }
+      .mc-btn:hover { background:rgba(0,255,100,0.25); }
+      .mc-btn-red { background:rgba(255,60,60,0.15); color:#f66; border-color:rgba(255,60,60,0.3); }
+      .mc-btn-red:hover { background:rgba(255,60,60,0.25); }
       #mc-calib-overlay {
         position:fixed; inset:0; z-index:600;
-        background:rgba(0,0,0,0.88);
+        background:rgba(5,5,12,0.92);
         display:none; flex-direction:row;
-        align-items:center; justify-content:center; gap:30px;
+        align-items:center; justify-content:center; gap:40px;
+        backdrop-filter:blur(6px);
       }
       #mc-calib-preview {
-        border:2px solid #0f0; border-radius:8px; overflow:hidden;
-        width:320px; height:240px; background:#000; flex-shrink:0;
-        position:relative;
+        border:1px solid rgba(0,255,100,0.4); border-radius:12px;
+        overflow:hidden; width:320px; height:240px;
+        background:#000; flex-shrink:0;
+        box-shadow:0 0 30px rgba(0,255,100,0.15);
       }
       #mc-calib-canvas { width:320px; height:240px; display:block; }
-      #mc-calib-text { color:#fff; font:14px monospace; max-width:300px; }
-      #mc-calib-text h2 { color:#0f0; margin:0 0 10px; font-size:20px; }
+      #mc-calib-text { color:#ddd; font:14px 'Inter',sans-serif; max-width:300px; }
+      #mc-calib-text h2 { color:#0f0; margin:0 0 12px; font-family:'Orbitron',monospace; font-size:18px; }
       #mc-calib-track {
-        width:100%; height:14px; background:#333;
-        border-radius:7px; overflow:hidden; margin:12px 0;
+        width:100%; height:10px; background:#1a1a2a;
+        border-radius:5px; overflow:hidden; margin:14px 0 6px;
       }
-      #mc-calib-bar { height:100%; width:0%; background:#0f0; transition:width 0.1s; }
-      /* ── Tutorial overlay ── */
+      #mc-calib-bar { height:100%; width:0%; background:linear-gradient(90deg,#00c44f,#0ff); transition:width 0.1s; border-radius:5px; }
       #mc-tutorial-overlay {
         display:none; position:fixed; inset:0; z-index:500;
         background:rgba(0,0,0,0.55); pointer-events:none;
       }
       .mc-tut-card {
         position:absolute; top:35%; left:50%; transform:translateX(-50%);
-        background:rgba(0,0,0,0.9); border:2px solid #0f0;
-        border-radius:14px; padding:24px 40px;
-        color:#fff; font:18px monospace; text-align:center;
-        box-shadow:0 0 30px rgba(0,255,0,0.5);
+        background:rgba(8,10,18,0.95);
+        border:1px solid rgba(255,255,255,0.15);
+        border-radius:18px; padding:28px 48px;
+        color:#fff; font:18px 'Inter',sans-serif; text-align:center;
+        box-shadow:0 8px 60px rgba(0,0,0,0.8);
+        backdrop-filter:blur(12px);
       }
-      .mc-tut-icon { font-size:56px; display:block; margin-bottom:8px; }
+      .mc-tut-icon { font-size:60px; display:block; margin-bottom:10px; }
     `;
     document.head.appendChild(style);
 
-    // Hidden video element (source for MediaPipe)
     videoEl=document.createElement('video');
     videoEl.id='mc-video'; videoEl.autoplay=true; videoEl.playsInline=true;
     document.body.appendChild(videoEl);
 
-    // Camera preview widget (top-right corner, always visible while active)
     const wrap=document.createElement('div'); wrap.id='mc-preview-wrap';
     overlayCanvas=document.createElement('canvas');
     overlayCanvas.id='mc-overlay-canvas';
@@ -393,196 +439,92 @@ const MotionController = (function () {
     wrap.appendChild(overlayCanvas);
     document.body.appendChild(wrap);
 
-    // Status badge below preview
     const badge=document.createElement('div'); badge.id='mc-status-badge';
     badge.innerText='\uD83D\uDD34 Camera starting…';
     document.body.appendChild(badge);
 
-    // Low-light warning
     const ll=document.createElement('div'); ll.id='mc-lowlight-warn';
-    ll.innerText='\u26A0 Low light — move to better lighting';
+    ll.innerText='\u26A0\uFE0F Low light — move to better lighting';
     document.body.appendChild(ll);
 
-    // Gesture flash (centre screen)
     const gf=document.createElement('div'); gf.id='mc-gesture-flash';
     document.body.appendChild(gf);
 
-    // Settings panel
     const panel=document.createElement('div'); panel.id='mc-panel';
     panel.innerHTML=`
-      <h4>&#9881; Webcam Settings</h4>
+      <h4>&#9881; WEBCAM SETTINGS</h4>
       <div class="mc-row"><label>Preset</label>
-        <select id="mc-preset" onchange="MotionController.setPreset(this.value)">
+        <select id="mc-preset" onchange="MotionController.setPreset(this.value)" style="background:#1a1a2a;color:#eee;border:1px solid #333;border-radius:4px;padding:2px 6px;">
           <option>Kids</option><option selected>Normal</option><option>Fitness</option>
         </select></div>
       <div class="mc-row"><label>Jump Enabled</label>
-        <input type="checkbox" id="mc-jump-toggle" checked
-          onchange="MotionController.toggleJump(this.checked)"></div>
+        <input type="checkbox" id="mc-jump-toggle" checked onchange="MotionController.toggleJump(this.checked)"></div>
       <div class="mc-row"><label>Jump Sensitivity</label>
         <input type="range" id="mc-jump-sens" min="0.3" max="2.5" step="0.1" value="1.0"
           oninput="MotionController.setJumpSensitivity(this.value);document.getElementById('mc-jval').innerText=parseFloat(this.value).toFixed(1)">
         <span id="mc-jval">1.0</span></div>
       <div class="mc-row"><label>Seated Mode</label>
-        <input type="checkbox" id="mc-seated"
-          onchange="MotionController._setCfg('seatedMode',this.checked)"> <small>(head-nod jump)</small></div>
+        <input type="checkbox" id="mc-seated" onchange="MotionController._setCfg('seatedMode',this.checked)"> <small style="color:#666">(head-nod jump)</small></div>
       <div class="mc-row"><label>Mirror Camera</label>
-        <input type="checkbox" id="mc-mirror" checked
-          onchange="MotionController._setCfg('mirrorCamera',this.checked)"></div>
-      <div class="mc-row"><label>Auto-pause if out</label>
-        <input type="checkbox" id="mc-autopause" checked
-          onchange="MotionController._setCfg('autoPause',this.checked)"></div>
-      <hr style="border-color:#333;">
+        <input type="checkbox" id="mc-mirror" checked onchange="MotionController._setCfg('mirrorCamera',this.checked)"></div>
+      <div class="mc-row"><label>Auto-pause if out of frame</label>
+        <input type="checkbox" id="mc-autopause" checked onchange="MotionController._setCfg('autoPause',this.checked)"></div>
+      <hr style="border-color:rgba(255,255,255,0.08);margin:12px 0;">
       <button onclick="MotionController.recalibrate()" class="mc-btn">&#128247; Recalibrate</button>
       <button onclick="MotionController._togglePanel()" class="mc-btn mc-btn-red">&#10005; Close</button>
     `;
     document.body.appendChild(panel);
 
-    // Settings toggle button (gear icon, floats above preview)
     const gear=document.createElement('button');
     gear.id='mc-gear-btn';
     gear.innerHTML='&#9881;';
     gear.title='Webcam Settings';
-    gear.style.cssText='position:fixed;top:10px;right:216px;z-index:399;background:rgba(0,0,0,0.75);color:#0f0;border:1px solid #0f0;border-radius:4px;padding:3px 7px;cursor:pointer;font-size:14px;';
+    gear.style.cssText='display:none;position:fixed;top:64px;right:218px;z-index:399;background:rgba(10,12,20,0.85);color:rgba(0,255,100,0.7);border:1px solid rgba(0,255,100,0.2);border-radius:6px;padding:4px 8px;cursor:pointer;font-size:14px;backdrop-filter:blur(4px);';
     gear.onclick=()=>_togglePanel();
     document.body.appendChild(gear);
 
-    // Full-screen calibration overlay (shows LIVE camera + skeleton)
     const calibOv=document.createElement('div'); calibOv.id='mc-calib-overlay';
-    // The calib canvas reuses the same overlayCanvas feed; we use a separate one here
     calibOv.innerHTML=`
       <div id="mc-calib-preview">
         <canvas id="mc-calib-canvas" width="320" height="240"></canvas>
       </div>
       <div id="mc-calib-text">
         <h2>&#128247; Calibration</h2>
-        <p>Stand back so your <strong>head to hips</strong> are visible.<br>
-        Keep arms relaxed. Hold a neutral pose.</p>
+        <p>Stand back so your <strong>head to hips</strong> are visible.<br>Keep arms relaxed. Hold a neutral pose.</p>
         <div id="mc-calib-track"><div id="mc-calib-bar"></div></div>
-        <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:#555;margin-bottom:12px;">
           <span>0%</span><span id="mc-calib-pct" style="color:#0f0;font-weight:bold;">0%</span><span>100%</span>
         </div>
-        <p style="margin-top:12px;color:#aaa;font-size:12px;">&#9888; <em>The green skeleton shows what the camera sees.<br>Make sure it covers your shoulders and hips.</em></p>
+        <p style="color:#666;font-size:12px;">&#9888;&#65039; The green skeleton shows what the camera sees.<br>Make sure it covers your shoulders and hips.</p>
       </div>
     `;
     document.body.appendChild(calibOv);
 
-    // Tutorial overlay
     const tutOv=document.createElement('div'); tutOv.id='mc-tutorial-overlay';
     tutOv.innerHTML='<div class="mc-tut-card" id="mc-tut-card"></div>';
     document.body.appendChild(tutOv);
 
-    // Wire calibration canvas to the same pose feed
-    _calibCanvas = document.getElementById('mc-calib-canvas');
-    _calibCtx    = _calibCanvas ? _calibCanvas.getContext('2d') : null;
+    _calibCanvas=document.getElementById('mc-calib-canvas');
+    _calibCtx=_calibCanvas?_calibCanvas.getContext('2d'):null;
   }
 
-  /* Calibration canvas (separate bigger canvas in the full-screen overlay) */
   let _calibCanvas=null, _calibCtx=null;
-
-  // Override _onPoseResults to also paint the big calib canvas
-  const _origDrawCamera=_drawCameraFrame;
-  function _drawCameraFrameFull(results){
-    _origDrawCamera(results);
-    if(!_calibCtx || !calibOvVisible()) return;
-    const W=320,H=240;
-    _calibCtx.save();
-    _calibCtx.translate(W,0); _calibCtx.scale(-1,1);
-    _calibCtx.drawImage(videoEl,0,0,W,H);
-    _calibCtx.restore();
-    if(results.poseLandmarks && typeof drawConnectors!=='undefined'){
-      _calibCtx.save();
-      _calibCtx.translate(W,0); _calibCtx.scale(-1,1);
-      drawConnectors(_calibCtx,results.poseLandmarks,POSE_CONNECTIONS,{color:'rgba(0,255,100,0.9)',lineWidth:3});
-      drawLandmarks(_calibCtx,results.poseLandmarks,{color:'#ff3d3d',lineWidth:1,radius:5});
-      _calibCtx.restore();
-    }
-  }
 
   function calibOvVisible(){
     const o=document.getElementById('mc-calib-overlay');
-    return o && o.style.display!=='none';
+    return o&&o.style.display!=='none';
   }
 
-  // Patch _onPoseResults to also render to calib canvas
-  const _origOnResults=_onPoseResults.toString(); // closure capture is fine
-  function _patchedOnPoseResults(results){
-    // Draw to both canvases
-    _drawCameraFrame(results);
-    if(calibOvVisible() && _calibCtx && videoEl){
-      const W=320,H=240;
-      _calibCtx.save();
-      _calibCtx.translate(W,0); _calibCtx.scale(-1,1);
-      _calibCtx.drawImage(videoEl,0,0,W,H);
-      _calibCtx.restore();
-      if(results.poseLandmarks && typeof drawConnectors!=='undefined'){
-        _calibCtx.save();
-        _calibCtx.translate(W,0); _calibCtx.scale(-1,1);
-        drawConnectors(_calibCtx,results.poseLandmarks,POSE_CONNECTIONS,{color:'rgba(0,255,100,0.9)',lineWidth:3});
-        drawLandmarks(_calibCtx,results.poseLandmarks,{color:'#ff3d3d',lineWidth:1,radius:5});
-        _calibCtx.restore();
-      }
-    }
-
-    if(!results.poseLandmarks || results.poseLandmarks.length<25){
-      _handleMissingPose(); return;
-    }
-    const lm=results.poseLandmarks;
-    const lSh=lm[11],rSh=lm[12],lHip=lm[23],rHip=lm[24],nose=lm[0];
-    if(lSh.visibility<CFG.visibilityMin||rSh.visibility<CFG.visibilityMin){
-      _handleMissingPose(); return;
-    }
-    const avgVis=(lSh.visibility+rSh.visibility+lHip.visibility+rHip.visibility)/4;
-    if(avgVis<0.38) onLowLight();
-    inFrame=true;
-    if(_wasMissing&&CFG.autoPause) onResume();
-    _wasMissing=false; _lastLM=lm;
-    const flip=CFG.mirrorCamera?(x=>1-x):(x=>x);
-    const frame={
-      shoulderMidX:flip((lSh.x+rSh.x)/2),
-      shoulderMidY:(lSh.y+rSh.y)/2,
-      hipMidY:(lHip.y+rHip.y)/2,
-      headY:nose.y
-    };
-    if(!calibrated){ _accumulateCalib(frame); return; }
-    history.push(frame);
-    if(history.length>CFG.smoothingFrames) history.shift();
-    if(history.length<2) return;
-    const s=_smooth();
-    _interpret(s);
-    _drawHUD(s);
-  }
-
-  // We set the real handler after pose is set up
-  function _setupPosePatched(){
-    if(typeof Pose==='undefined'){ console.error('[MC] Pose not loaded'); return; }
-    pose=new Pose({ locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}` });
-    pose.setOptions({
-      modelComplexity:1, smoothLandmarks:true,
-      enableSegmentation:false, smoothSegmentation:false,
-      minDetectionConfidence:0.5, minTrackingConfidence:0.5
-    });
-    pose.onResults(_patchedOnPoseResults);
-    camera=new Camera(videoEl,{
-      onFrame:async()=>{ await pose.send({image:videoEl}); },
-      width:320, height:240
-    });
-    // Grab the calib canvas now that DOM exists
-    _calibCanvas=document.getElementById('mc-calib-canvas');
-    _calibCtx=_calibCanvas?_calibCanvas.getContext('2d'):null;
-    _showCalibOverlay();
-    camera.start();
-    active=true;
-  }
-
-  /* ──────────────── OVERLAY SHOW/HIDE ────────────────────────────────── */
   function _showCalibOverlay(){
     const o=document.getElementById('mc-calib-overlay');
-    if(o){ o.style.display='flex'; }
+    if(o) o.style.display='flex';
     _setStatus('\uD83D\uDFE1 Calibrating…');
   }
   function _hideCalibOverlay(){
     const o=document.getElementById('mc-calib-overlay');
-    if(o){ o.style.display='none'; }
+    if(o) o.style.display='none';
+    const gear=document.getElementById('mc-gear-btn');
+    if(gear) gear.style.display='block';
     _setStatus('\uD83D\uDFE2 Tracking');
   }
   function _togglePanel(){
@@ -600,7 +542,6 @@ const MotionController = (function () {
   }
   function _setCfg(k,v){ CFG[k]=v; }
 
-  /* ─────────────────── GESTURE FLASH ─────────────────────────────────── */
   function _flashGesture(label){
     const el=document.getElementById('mc-gesture-flash');
     if(!el) return;
@@ -610,38 +551,11 @@ const MotionController = (function () {
     el._t=setTimeout(()=>{ el.style.opacity='0'; },500);
   }
 
-  /* ────────────────── LOW LIGHT ───────────────────────────────────────── */
   function _handleLowLight(){
     const w=document.getElementById('mc-lowlight-warn');
     if(w) w.style.display='block';
     clearTimeout(_llTimer);
     _llTimer=setTimeout(()=>{ const w=document.getElementById('mc-lowlight-warn'); if(w) w.style.display='none'; },4000);
-  }
-
-  /* Patch _loadMediaPipe to call the patched setup */
-  function _loadMediaPipePatched(){
-    const needed=['@mediapipe/camera_utils/camera_utils.js',
-                  '@mediapipe/drawing_utils/drawing_utils.js',
-                  '@mediapipe/pose/pose.js'];
-    let done=0;
-    needed.forEach(p=>{
-      const s=document.createElement('script');
-      s.src='https://cdn.jsdelivr.net/npm/'+p;
-      s.crossOrigin='anonymous';
-      s.onload=()=>{ done++; if(done===needed.length) _setupPosePatched(); };
-      s.onerror=()=>console.warn('[MC] CDN fail:',p);
-      document.head.appendChild(s);
-    });
-  }
-
-  function init(cbs){
-    onLeft=cbs.onLeft||onLeft; onRight=cbs.onRight||onRight;
-    onJump=cbs.onJump||onJump; onDuck=cbs.onDuck||onDuck;
-    onPause=cbs.onPause||onPause; onResume=cbs.onResume||onResume;
-    onCalibrationDone=cbs.onCalibrationDone||onCalibrationDone;
-    onLowLight=cbs.onLowLight||onLowLight;
-    if(!videoEl){ _buildUI(); }
-    _loadMediaPipePatched();
   }
 
   return {
