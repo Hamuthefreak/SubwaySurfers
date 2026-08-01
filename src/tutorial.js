@@ -1,81 +1,60 @@
 /**
- * tutorial.js
- * Slow-motion tutorial overlay for SubwaySurfers Webcam Mode
- * Plays automatically after calibration, then resumes normal speed.
+ * tutorial.js — slow-motion gesture tutorial overlay
+ * Floats above the original game without touching any game files.
  */
-
-const Tutorial = (function () {
+const Tutorial = (function(){
 
   const STEPS = [
-    { icon: '⬅️',  text: 'Lean LEFT to dodge!',       gesture: 'left',  delay: 2800 },
-    { icon: '➡️',  text: 'Lean RIGHT to dodge!',      gesture: 'right', delay: 2800 },
-    { icon: '⬆️',  text: 'JUMP to clear obstacles!',  gesture: 'jump',  delay: 3000 },
-    { icon: '⬇️',  text: 'DUCK to slide under!',      gesture: 'duck',  delay: 2800 },
-    { icon: '🎮',  text: 'GO — use your body!',        gesture: null,    delay: 2000 },
+    { icon:'⬅️',  text:'Lean LEFT to change lane!',     delay:3000 },
+    { icon:'➡️',  text:'Lean RIGHT to change lane!',    delay:3000 },
+    { icon:'⬆️',  text:'Jump to clear obstacles!',      delay:3000 },
+    { icon:'⬇️',  text:'Squat to duck under boards!',   delay:3000 },
+    { icon:'🏃',  text:'Now GO — use your body!',        delay:2000 },
   ];
 
-  let running    = false;
-  let stepIndex  = 0;
-  let slowFactor = 0.25;   // game speed during tutorial (fraction of normal)
-  let onComplete = () => {};
-  let onSetSpeed = () => {};
+  let running=false, stepIndex=0;
+  let _onComplete=()=>{}, _onSetSpeed=()=>{};
 
-  function start(callbacks) {
-    onComplete = callbacks.onComplete || onComplete;
-    onSetSpeed = callbacks.onSetSpeed || onSetSpeed;  // fn(factor)
-    running    = true;
-    stepIndex  = 0;
-    _runStep();
+  function start(cbs){
+    _onComplete=cbs.onComplete||_onComplete;
+    _onSetSpeed=cbs.onSetSpeed||_onSetSpeed;
+    running=true; stepIndex=0;
+    _step();
   }
 
-  function _runStep() {
-    if (stepIndex >= STEPS.length) {
-      _finish();
-      return;
-    }
-    const step = STEPS[stepIndex];
-    onSetSpeed(slowFactor);
-    _showCard(step);
-    setTimeout(() => {
-      stepIndex++;
-      _runStep();
-    }, step.delay);
+  function _step(){
+    if(stepIndex>=STEPS.length){ _finish(); return; }
+    const s=STEPS[stepIndex];
+    _onSetSpeed(0.25);  // slow-mo
+    _showCard(s);
+    setTimeout(()=>{ stepIndex++; _step(); }, s.delay);
   }
 
-  function _showCard(step) {
-    const overlay = document.getElementById('mc-tutorial-overlay');
-    const card    = document.getElementById('mc-tut-card');
-    if (!overlay || !card) return;
-    overlay.style.display = 'block';
-    card.innerHTML = `
-      <span class="mc-tut-icon">${step.icon}</span>
-      <div>${step.text}</div>
-      ${ step.gesture ? `<div style="color:#0f0;font-size:13px;margin-top:8px;">[ perform gesture now ]</div>` : '' }
-      <div style="color:#888;font-size:11px;margin-top:6px;">SLOW MOTION</div>
+  function _showCard(s){
+    const ov=document.getElementById('mc-tutorial-overlay');
+    const card=document.getElementById('mc-tut-card');
+    if(!ov||!card) return;
+    ov.style.display='block';
+    card.innerHTML=`
+      <span class="mc-tut-icon">${s.icon}</span>
+      <div>${s.text}</div>
+      <div style="color:#888;font-size:12px;margin-top:8px;">● SLOW MOTION ●</div>
     `;
-    // Animate card in
-    card.style.opacity = '0';
-    card.style.transition = 'opacity 0.3s';
-    requestAnimationFrame(() => { card.style.opacity = '1'; });
+    card.style.opacity='0';
+    card.style.transition='opacity 0.25s';
+    requestAnimationFrame(()=>{ card.style.opacity='1'; });
   }
 
-  function _finish() {
-    running = false;
-    onSetSpeed(1.0);
-    const overlay = document.getElementById('mc-tutorial-overlay');
-    if (overlay) {
-      const card = document.getElementById('mc-tut-card');
-      if (card) {
-        card.innerHTML = `<span class="mc-tut-icon">🚀</span><div>GO GO GO!</div>`;
-        card.style.opacity = '1';
-      }
-      setTimeout(() => { overlay.style.display = 'none'; }, 1400);
-    }
-    onComplete();
+  function _finish(){
+    running=false;
+    _onSetSpeed(1.0);
+    const ov=document.getElementById('mc-tutorial-overlay');
+    const card=document.getElementById('mc-tut-card');
+    if(card){ card.innerHTML='<span class="mc-tut-icon">🚀</span><div>GO!</div>'; }
+    setTimeout(()=>{ if(ov) ov.style.display='none'; _onComplete(); }, 1500);
   }
 
-  function isRunning() { return running; }
-
+  function isRunning(){ return running; }
   return { start, isRunning };
 
 })();
