@@ -11,9 +11,9 @@ flyarr = [];
 bootsarr = [];
 magnetarr = [];
 Score = 0;
-textureOn = 0;
+textureOn = 1;
 grayscale = 0;
-textureprogramInfo = ''
+textureprogramInfo = '';
 nontextureprogramInfo = '';
 groundtexture = '';
 walltexture = '';
@@ -28,6 +28,41 @@ downtexture = '';
 endtexture = '';
 flashTime = 0;
 totalTime = 0;
+let _gameOver = false;
+
+/**
+ * sleep() — originally undefined, caused crashes on every collision.
+ * Now triggers a proper game-over: stops the loop, shows overlay.
+ */
+function sleep(ms) {
+  if (_gameOver) return;
+  _gameOver = true;
+  // Stop the game loop by zeroing speed factor
+  window._gameSpeedFactor = 0;
+  // Show game-over overlay
+  const overlay = document.getElementById('gameover-overlay');
+  const finalScore = document.getElementById('gameover-score');
+  if (overlay) {
+    if (finalScore) finalScore.innerText = 'SCORE: ' + Score;
+    overlay.style.display = 'flex';
+  }
+}
+
+function restartGame() {
+  _gameOver = false;
+  window._gameSpeedFactor = 1.0;
+  const overlay = document.getElementById('gameover-overlay');
+  if (overlay) overlay.style.display = 'none';
+  // Re-init everything
+  cameraPos = [];
+  Score = 0;
+  coinarr = []; trainarr = []; downboardarr = []; upboardarr = [];
+  conesarr = []; flyarr = []; bootsarr = []; magnetarr = [];
+  flashTime = 0; totalTime = 0;
+  const gl = document.querySelector('#glcanvas').getContext('webgl') ||
+             document.querySelector('#glcanvas').getContext('experimental-webgl');
+  if (gl) initBuffers(gl);
+}
 
 main();
 
@@ -42,32 +77,34 @@ function main() {
     alert('Unable to initialize WebGL. Your browser or machine may not support it.');
     return;
   }
-  groundtexture = loadTexture(gl, '../static/ground.jpg');
-  walltexture = loadTexture(gl, '../static/wall.jpg');
-  woodtexture = loadTexture(gl, '../static/wood.jpg');
-  metaltexture = loadTexture(gl, '../static/tracks.jpg');
-  traintexture = loadTexture(gl, '../static/train.jpg');
-  skytexture = loadTexture(gl, '../static/sky.jpg');
-  redtexture = loadTexture(gl, '../static/red.jpeg');
-  bluetexture = loadTexture(gl, '../static/blue.jpg');
-  goldtexture = loadTexture(gl, '../static/gold.jpg');
-  downtexture = loadTexture(gl, '../static/down.jpg')
-  endtexture = loadTexture(gl, '../static/end.jpg')
-  
+  groundtexture = loadTexture(gl, 'static/ground.jpg');
+  walltexture   = loadTexture(gl, 'static/wall.jpg');
+  woodtexture   = loadTexture(gl, 'static/wood.jpg');
+  metaltexture  = loadTexture(gl, 'static/tracks.jpg');
+  traintexture  = loadTexture(gl, 'static/train.jpg');
+  skytexture    = loadTexture(gl, 'static/sky.jpg');
+  redtexture    = loadTexture(gl, 'static/red.jpeg');
+  bluetexture   = loadTexture(gl, 'static/blue.jpg');
+  goldtexture   = loadTexture(gl, 'static/gold.jpg');
+  downtexture   = loadTexture(gl, 'static/down.jpg');
+  endtexture    = loadTexture(gl, 'static/end.jpg');
+
   initBuffers(gl);
 
   var then = 0;
   resetsources(gl);
   function render(now) {
-
-    now *= 0.001;  // convert to seconds
+    now *= 0.001;
     const deltaTime = now - then;
     then = now;
 
-    tickElements(gl);
+    const effectiveDelta = deltaTime * (window._gameSpeedFactor !== undefined ? window._gameSpeedFactor : 1.0);
 
-    drawScene(gl, deltaTime);
+    if (window._gameSpeedFactor !== 0 && !_gameOver) {
+      tickElements(gl);
+    }
 
+    drawScene(gl, effectiveDelta);
     requestAnimationFrame(render);
   }
   requestAnimationFrame(render);
@@ -77,12 +114,9 @@ function resetsources(gl){
   vsSource = `
     attribute vec4 aVertexPosition;
     attribute vec4 aVertexColor;
-
     uniform mat4 uModelViewMatrix;
     uniform mat4 uProjectionMatrix;
-
     varying lowp vec4 vColor;
-
     void main(void) {
       gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
       vColor = aVertexColor;
@@ -90,33 +124,28 @@ function resetsources(gl){
   `;
   fsSource = `
     varying lowp vec4 vColor;
-
     void main(void) {
       gl_FragColor = vColor;
     }
   `;
-
   shaderProgram = initShaderProgram(gl, vsSource, fsSource);
   nontextureprogramInfo = {
     program: shaderProgram,
     attribLocations: {
       vertexPosition: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
-      vertexColor: gl.getAttribLocation(shaderProgram, 'aVertexColor'),
+      vertexColor:    gl.getAttribLocation(shaderProgram, 'aVertexColor'),
     },
     uniformLocations: {
       projectionMatrix: gl.getUniformLocation(shaderProgram, 'uProjectionMatrix'),
-      modelViewMatrix: gl.getUniformLocation(shaderProgram, 'uModelViewMatrix'),
+      modelViewMatrix:  gl.getUniformLocation(shaderProgram, 'uModelViewMatrix'),
     },
   };
   vsSource = `
     attribute vec4 aVertexPosition;
     attribute vec2 aTextureCoord;
-
     uniform mat4 uModelViewMatrix;
     uniform mat4 uProjectionMatrix;
-
     varying highp vec2 vTextureCoord;
-
     void main(void) {
       gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
       vTextureCoord = aTextureCoord;
@@ -124,9 +153,7 @@ function resetsources(gl){
   `;
   fsSource = `
     varying highp vec2 vTextureCoord;
-
     uniform sampler2D uSampler;
-
     void main(void) {
       gl_FragColor = texture2D(uSampler, vTextureCoord);
     }
@@ -136,522 +163,312 @@ function resetsources(gl){
     program: shaderProgram,
     attribLocations: {
       vertexPosition: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
-      textureCoord: gl.getAttribLocation(shaderProgram, 'aTextureCoord'),
+      textureCoord:   gl.getAttribLocation(shaderProgram, 'aTextureCoord'),
     },
     uniformLocations: {
       projectionMatrix: gl.getUniformLocation(shaderProgram, 'uProjectionMatrix'),
-      modelViewMatrix: gl.getUniformLocation(shaderProgram, 'uModelViewMatrix'),
-      uSampler: gl.getUniformLocation(shaderProgram, 'uSampler'),
+      modelViewMatrix:  gl.getUniformLocation(shaderProgram, 'uModelViewMatrix'),
+      uSampler:         gl.getUniformLocation(shaderProgram, 'uSampler'),
     },
   };
   vsSource = `
     attribute vec4 a_position;
-	attribute vec4 a_color;
-	attribute vec2 a_texCoord0;
-
-	uniform mat4 u_modelviewTrans;
-	uniform mat4 u_projTrans;
-
-	varying lowp vec4 v_color;
-	varying highp vec2 v_texCoords;
-
-	void main() {
-	    gl_Position = u_projTrans * u_modelviewTrans *a_position;
-	    v_color = a_color;
-	    v_texCoords = a_texCoord0;
-	}
+    attribute vec4 a_color;
+    attribute vec2 a_texCoord0;
+    uniform mat4 u_modelviewTrans;
+    uniform mat4 u_projTrans;
+    varying lowp vec4 v_color;
+    varying highp vec2 v_texCoords;
+    void main() {
+      gl_Position = u_projTrans * u_modelviewTrans * a_position;
+      v_color = a_color;
+      v_texCoords = a_texCoord0;
+    }
   `;
   fsSource = `
     precision mediump float;
     varying lowp vec4 v_color;
-	varying highp vec2 v_texCoords;
-	uniform sampler2D u_texture;
-
-	void main() {
-	        vec4 color = texture2D(u_texture, v_texCoords);
-	        float graycolor = 0.299*color.r + 0.587*color.g + 0.114*color.b;
-	        gl_FragColor = vec4(vec3(graycolor), color.a);
-	}
+    varying highp vec2 v_texCoords;
+    uniform sampler2D u_texture;
+    void main() {
+      vec4 color = texture2D(u_texture, v_texCoords);
+      float graycolor = 0.299*color.r + 0.587*color.g + 0.114*color.b;
+      gl_FragColor = vec4(vec3(graycolor), color.a);
+    }
   `;
   shaderProgram = initShaderProgram(gl, vsSource, fsSource);
   grayscaleprogramInfo = {
     program: shaderProgram,
     attribLocations: {
       vertexPosition: gl.getAttribLocation(shaderProgram, 'a_position'),
-      textureCoord: gl.getAttribLocation(shaderProgram, 'a_texCoord0'),
+      textureCoord:   gl.getAttribLocation(shaderProgram, 'a_texCoord0'),
     },
     uniformLocations: {
       projectionMatrix: gl.getUniformLocation(shaderProgram, 'u_projTrans'),
-      modelViewMatrix: gl.getUniformLocation(shaderProgram, 'u_modelviewTrans'),
-      uSampler: gl.getUniformLocation(shaderProgram, 'u_texture'),
+      modelViewMatrix:  gl.getUniformLocation(shaderProgram, 'u_modelviewTrans'),
+      uSampler:         gl.getUniformLocation(shaderProgram, 'u_texture'),
     },
   };
-
   vsSource = `
     attribute vec4 a_position;
-	attribute vec4 a_color;
-	attribute vec2 a_texCoord0;
-
-	uniform mat4 u_modelviewTrans;
-	uniform mat4 u_projTrans;
-
-	varying lowp vec4 v_color;
-	varying highp vec2 v_texCoords;
-
-	void main() {
-	    gl_Position = u_projTrans * u_modelviewTrans *a_position;
-	    v_color = a_color;
-	    v_texCoords = a_texCoord0;
-	}
+    attribute vec4 a_color;
+    attribute vec2 a_texCoord0;
+    uniform mat4 u_modelviewTrans;
+    uniform mat4 u_projTrans;
+    varying lowp vec4 v_color;
+    varying highp vec2 v_texCoords;
+    void main() {
+      gl_Position = u_projTrans * u_modelviewTrans * a_position;
+      v_color = a_color;
+      v_texCoords = a_texCoord0;
+    }
   `;
   fsSource = `
     precision mediump float;
     varying lowp vec4 v_color;
-	varying highp vec2 v_texCoords;
-	uniform sampler2D u_texture;
-
-	void main() {
-	        vec4 color = texture2D(u_texture, v_texCoords);
-	        gl_FragColor = vec4(1.2*color.r, 1.2*color.g, 1.2*color.b, color.a);
-	}
+    varying highp vec2 v_texCoords;
+    uniform sampler2D u_texture;
+    void main() {
+      vec4 color = texture2D(u_texture, v_texCoords);
+      gl_FragColor = vec4(1.2*color.r, 1.2*color.g, 1.2*color.b, color.a);
+    }
   `;
   shaderProgram = initShaderProgram(gl, vsSource, fsSource);
   flashprogramInfo = {
     program: shaderProgram,
     attribLocations: {
       vertexPosition: gl.getAttribLocation(shaderProgram, 'a_position'),
-      textureCoord: gl.getAttribLocation(shaderProgram, 'a_texCoord0'),
+      textureCoord:   gl.getAttribLocation(shaderProgram, 'a_texCoord0'),
     },
     uniformLocations: {
       projectionMatrix: gl.getUniformLocation(shaderProgram, 'u_projTrans'),
-      modelViewMatrix: gl.getUniformLocation(shaderProgram, 'u_modelviewTrans'),
-      uSampler: gl.getUniformLocation(shaderProgram, 'u_texture'),
+      modelViewMatrix:  gl.getUniformLocation(shaderProgram, 'u_modelviewTrans'),
+      uSampler:         gl.getUniformLocation(shaderProgram, 'u_texture'),
     },
   };
-
 }
 
 function texture(){
-	if(textureOn==0){
-		textureOn = 1;
-	}
-	else{
-		textureOn = 0;
-	}
+  textureOn = textureOn == 0 ? 1 : 0;
 }
 function grayfn(){
-	if(grayscale==0){
-		grayscale = 1;
-	}
-	else{
-		grayscale = 0;
-	}
+  grayscale = grayscale == 0 ? 1 : 0;
 }
 
 function tickElements(gl) {
-  
   totalTime++;
-  if(totalTime>4950){
-  	document.getElementById("sc").innerHTML+="The End";
-  	sleep(100);
-  }		
+  if (totalTime > 4950) {
+    sleep(100);
+    return;
+  }
 
   surfer.tick();
   flashTime++;
-
-  if(Math.floor((Math.random()*100) + 1) == 1){
-  	flashTime = 0;
-  }
+  if (Math.floor((Math.random()*100)+1) == 1) flashTime = 0;
 
   police.tick(surfer.position[0]);
 
-  if(police.position[2]-surfer.position[2] < 2 && Math.abs(police.position[1] - surfer.position[1])<0.2){
-  	sleep(100);
+  if (police.position[2]-surfer.position[2] < 2 && Math.abs(police.position[1]-surfer.position[1]) < 0.2) {
+    sleep(100); return;
+  }
+  if (police.position[2]-surfer.position[2] < 6) {
+    surfer.position[2] -= 0.005;
   }
 
-  if(police.position[2]-surfer.position[2] < 6){
-  	surfer.position[2]-=0.005;
-  }
+  cameraPos = [surfer.position[0], Math.max(surfer.position[1]+1.5, 1.3), surfer.position[2]+6.0];
 
-  cameraPos=[surfer.position[0], Math.max(surfer.position[1]+1.5, 1.3), surfer.position[2]+6.0];
-
-  for(var i=0;i<numOfCoins;i++){
-    if(coinarr[i].taken==0){
+  for (var i = 0; i < numOfCoins; i++) {
+    if (coinarr[i].taken == 0) {
       coinarr[i].tick();
-      dist = (coinarr[i].position[0]-surfer.position[0])**2 + 
-      		(coinarr[i].position[1]-surfer.position[1])**2 + 
-      		(coinarr[i].position[2]-surfer.position[2])**2; 
-      if(surfer.magnettime<500 && dist<10){
-      	coinarr[i].move([surfer.position[0]-coinarr[i].position[0], surfer.position[1]-coinarr[i].position[1], surfer.position[2]-coinarr[i].position[2]], dist);
+      var dist = (coinarr[i].position[0]-surfer.position[0])**2 +
+                 (coinarr[i].position[1]-surfer.position[1])**2 +
+                 (coinarr[i].position[2]-surfer.position[2])**2;
+      if (surfer.magnettime < 500 && dist < 10) {
+        coinarr[i].move([
+          surfer.position[0]-coinarr[i].position[0],
+          surfer.position[1]-coinarr[i].position[1],
+          surfer.position[2]-coinarr[i].position[2]
+        ], dist);
       }
-
-      if(dist<0.3){
-        coinarr[i].taken = 1;
-        Score++;
-      }
+      if (dist < 0.3) { coinarr[i].taken = 1; Score++; }
     }
   }
 
-  document.getElementById("sc").innerHTML = "Score: "+Score;
+  // Update score display safely
+  const scEl = document.getElementById('sc');
+  if (scEl) scEl.innerText = 'Score: ' + Score;
+  const topScore = document.getElementById('score-display');
+  if (topScore) topScore.innerText = 'SCORE: ' + Score;
 
-	document.addEventListener('keydown', function(event) {
-	    if(event.keyCode == 37) {
-	        surfer.moveLeft();
+  for (var i = 0; i < numOfDownboards; i++) {
+    if (((downboardarr[i].position[0]-surfer.position[0])**2 +
+         (downboardarr[i].position[1]-0.5-surfer.position[1])**2 +
+         (downboardarr[i].position[2]-surfer.position[2])**2 < 0.4) &&
+        surfer.position[2] > downboardarr[i].position[2]) {
+      sleep(100); return;
+    }
+    if (((upboardarr[i].position[0]-surfer.position[0])**2 +
+         (upboardarr[i].position[1]-surfer.position[1])**2 +
+         (upboardarr[i].position[2]-surfer.position[2])**2 < 2.0) &&
+        surfer.position[2] > upboardarr[i].position[2]) {
+      sleep(100); return;
+    }
+    if (((conesarr[i].position[0]-surfer.position[0])**2 +
+         (conesarr[i].position[1]-surfer.position[1])**2 +
+         (conesarr[i].position[2]-surfer.position[2])**2 < 0.3) &&
+        surfer.position[2] > conesarr[i].position[2]) {
+      surfer.speed[2] = -0.08;
+    }
+    if (((trainarr[i].position[0]-surfer.position[0])**2 +
+         (trainarr[i].position[1]-surfer.position[1])**2 < 0.3) &&
+        surfer.position[2]-trainarr[i].position[2] < 10.0 &&
+        surfer.position[2] > trainarr[i].position[2]) {
+      sleep(100); return;
+    }
+  }
+
+  for (var i = 0; i < numOfFlies; i++) {
+    if (flyarr[i].taken == 0) {
+      flyarr[i].tick();
+      if (((flyarr[i].position[0]-surfer.position[0])**2 +
+           (flyarr[i].position[1]-surfer.position[1]-0.5)**2 +
+           (flyarr[i].position[2]-surfer.position[2])**2 < 0.2) &&
+          surfer.position[2] > flyarr[i].position[2]) {
+        flyarr[i].taken = 1;
+        superJumptime = 580;
+        surfer.flytime = 0;
+        numOfCoins += 20;
+        for (var j = 0; j < 20; j++) {
+          coinarr.push(new Coin(gl, [
+            Math.floor(Math.random()*2+1)==1 ? -1.1 : 1.1,
+            5.24, surfer.position[2]-7*j
+          ]));
+        }
+        break;
       }
-	    else if(event.keyCode == 39) {
-	        surfer.moveRight();
-	    }
-	    else if(event.keyCode == 32){
-	    	surfer.jump();
-	    }
-	    else if(event.keyCode == 40){
-	    	surfer.duck();
-	    }
-	});
-
-	for(var i=0;i<numOfDownboards;i++){
-		if(((downboardarr[i].position[0]-surfer.position[0])**2 + 
-			(downboardarr[i].position[1]-0.5-surfer.position[1])**2 + 
-			(downboardarr[i].position[2]-surfer.position[2])**2 <0.4) && surfer.position[2]>downboardarr[i].position[2]){
-			sleep(100);
-		}
-		if(((upboardarr[i].position[0]-surfer.position[0])**2 +
-			(upboardarr[i].position[1]-surfer.position[1])**2 +
-			(upboardarr[i].position[2]-surfer.position[2])**2 <2.0) && surfer.position[2]>upboardarr[i].position[2]){
-			sleep(100);
-		}
-	    if(((conesarr[i].position[0]-surfer.position[0])**2 + 
-	    	(conesarr[i].position[1]-surfer.position[1])**2 + 
-	    	(conesarr[i].position[2]-surfer.position[2])**2 <0.3) && surfer.position[2]>conesarr[i].position[2]){
-	      surfer.speed[2] = -0.08;
-	    }
-	    if(((trainarr[i].position[0]-surfer.position[0])**2 + 
-	    	(trainarr[i].position[1]-surfer.position[1])**2 <0.3) && surfer.position[2]-trainarr[i].position[2]<10.0 
-	    	&& surfer.position[2]>trainarr[i].position[2]){
-	      sleep(100);
-	    }
-	}
-
-  for(var i=0;i<numOfFlies;i++){
-    if(flyarr[i].taken==0){
-    	flyarr[i].tick();
-     	if(((flyarr[i].position[0]-surfer.position[0])**2 + 
-     		(flyarr[i].position[1]-surfer.position[1]-0.5)**2 + 
-     		(flyarr[i].position[2]-surfer.position[2])**2 <0.2) && surfer.position[2]>flyarr[i].position[2]){
-     		flyarr[i].taken = 1;
-        	superJumptime = 580;
-     		surfer.flytime = 0;
-     		numOfCoins += 20;
-     		for(var j=0;j<20;j++){
-     			if(Math.floor((Math.random()*2) + 1) == 1){
-  	        		coinarr.push(new Coin(gl, [-1.1, 5.24, surfer.position[2]-7*j]));
-  	      		}
-  	      		else{
-  	        		coinarr.push(new Coin(gl, [1.1, 5.24, surfer.position[2]-7*j]));
-  	      		}		
-     		}
-     		break;
-     	}
     }
-
-    if(bootsarr[i].taken==0){
-   	  bootsarr[i].tick();
-     	if(((bootsarr[i].position[0]-surfer.position[0])**2 + 
-     		(bootsarr[i].position[1]-surfer.position[1])**2 + 
-     		(bootsarr[i].position[2]-surfer.position[2])**2 <0.3) && surfer.position[2]>bootsarr[i].position[2]){
-     		bootsarr[i].taken = 1;
-        	surfer.superJumptime = 0;
-     		break;
-     	}
+    if (bootsarr[i].taken == 0) {
+      bootsarr[i].tick();
+      if (((bootsarr[i].position[0]-surfer.position[0])**2 +
+           (bootsarr[i].position[1]-surfer.position[1])**2 +
+           (bootsarr[i].position[2]-surfer.position[2])**2 < 0.3) &&
+          surfer.position[2] > bootsarr[i].position[2]) {
+        bootsarr[i].taken = 1;
+        surfer.superJumptime = 0;
+        break;
+      }
     }
-
-    if(magnetarr[i].taken==0){
-    	magnetarr[i].tick();
-    	if(((magnetarr[i].position[0]-surfer.position[0])**2 + 
-     		(magnetarr[i].position[1]-surfer.position[1])**2 + 
-     		(magnetarr[i].position[2]-surfer.position[2])**2 <0.3) && surfer.position[2]>magnetarr[i].position[2]){
-     		magnetarr[i].taken = 1;
-        	surfer.magnettime = 0;
-     		break;
-     	}
+    if (magnetarr[i].taken == 0) {
+      magnetarr[i].tick();
+      if (((magnetarr[i].position[0]-surfer.position[0])**2 +
+           (magnetarr[i].position[1]-surfer.position[1])**2 +
+           (magnetarr[i].position[2]-surfer.position[2])**2 < 0.3) &&
+          surfer.position[2] > magnetarr[i].position[2]) {
+        magnetarr[i].taken = 1;
+        surfer.magnettime = 0;
+        break;
+      }
     }
-
   }
 }
 
 function initBuffers(gl) {
-    bg = new Bg(gl);
-    ground = new Ground(gl);
-    track1 = new Track(gl, [1.1, 0.0, 0.0]);
-    track2 = new Track(gl, [-1.1, 0.0, 0.0]);  
-    surfer = new Surfer(gl, [-1.0, -0.5, -8.0]);
-    wall1 = new Wall(gl, [-3.0, 0.0, 0.0]);
-    wall2 = new Wall(gl, [3.0, 0.0, 0.0]);
-    police = new Police(gl, [-1.0, -0.5, -5.0]);
-    sun = new Sun(gl);
-    end = new End(gl, [0.0, 1.0, -1000.0]);
+  bg      = new Bg(gl);
+  ground  = new Ground(gl);
+  track1  = new Track(gl, [1.1, 0.0, 0.0]);
+  track2  = new Track(gl, [-1.1, 0.0, 0.0]);
+  surfer  = new Surfer(gl, [-1.0, -0.5, -8.0]);
+  wall1   = new Wall(gl, [-3.0, 0.0, 0.0]);
+  wall2   = new Wall(gl, [3.0, 0.0, 0.0]);
+  police  = new Police(gl, [-1.0, -0.5, -5.0]);
+  sun     = new Sun(gl);
+  end     = new End(gl, [0.0, 1.0, -1000.0]);
 
-    for(var i=0;i<numOfCoins;i++){
-      if(Math.floor((Math.random()*2) + 1) == 1){
-        coinarr.push(new Coin(gl, [-1.1, -0.2, -10*i]));
-      }
-      else{
-        coinarr.push(new Coin(gl, [1.1, -0.2, -10*i]));
-      }
-    }
+  // Keydown registered ONCE
+  if (!window._keyListenerAdded) {
+    window._keyListenerAdded = true;
+    document.addEventListener('keydown', function(event) {
+      if (window._gameSpeedFactor === 0 || _gameOver) return;
+      if      (event.keyCode == 37) surfer.moveLeft();
+      else if (event.keyCode == 39) surfer.moveRight();
+      else if (event.keyCode == 32) surfer.jump();
+      else if (event.keyCode == 40) surfer.duck();
+    });
+  }
 
-    for(var i=1;i<=numOfDownboards;i++){
-      if(Math.floor((Math.random()*2) + 1) == 1){
-        downboardarr.push(new Downboard(gl, [-1.1, -0.2, -67*i]));
-      }
-      else{
-        downboardarr.push(new Downboard(gl, [1.1, -0.2, -67*i]));
-      }
-
-      if(Math.floor((Math.random()*2) + 1) == 1){
-        upboardarr.push(new Upboard(gl, [-1.1, 1.0, -83*i]));
-      }
-      else{
-        upboardarr.push(new Upboard(gl, [1.1, 1.0, -83*i]));
-      }
-
-	    if(Math.floor((Math.random()*2) + 1) == 1){
-        conesarr.push(new Cones(gl, [-1.1, -0.7, -109*i]));
-      }
-      else{
-        conesarr.push(new Cones(gl, [1.1, -0.7, -109*i]));
-      }
-
-      if(Math.floor((Math.random()*2) + 1) == 1){
-        trainarr.push(new Train(gl, [-1.1, -0.7, -117*i]));
-      }
-      else{
-        trainarr.push(new Train(gl, [1.1, -0.7, -117*i]));
-      }      
-    }
-
-    for(var i=1;i<=numOfFlies;i++){
-	    if(Math.floor((Math.random()*2) + 1) == 1){
-    	  flyarr.push(new Fly(gl, [1.1, 0.2, -201*i]));
-      }
-      else{
-    	  flyarr.push(new Fly(gl, [-1.1, 0.2, -201*i]));
-      }
-    
-      if(Math.floor((Math.random()*2) + 1) == 1){
-    	  bootsarr.push(new Boots(gl, [1.1, 0.0, -189*i]));
-      }
-      else{
-    	  bootsarr.push(new Boots(gl, [-1.1, 0.0, -189*i]));
-      }
-
-      if(Math.floor((Math.random()*2) + 1) == 1){
-      	magnetarr.push(new Magnet(gl, [1.1, 0.0, -89*i]));
-      }
-      else{
-    	  magnetarr.push(new Magnet(gl, [-1.1, 0.0, -89*i]));
-      }
-    }	
+  for (var i = 0; i < numOfCoins; i++) {
+    coinarr.push(new Coin(gl, [Math.floor(Math.random()*2+1)==1 ? -1.1 : 1.1, -0.2, -10*i]));
+  }
+  for (var i = 1; i <= numOfDownboards; i++) {
+    downboardarr.push(new Downboard(gl, [Math.floor(Math.random()*2+1)==1 ? -1.1 : 1.1, -0.2, -67*i]));
+    upboardarr.push(new Upboard(gl,    [Math.floor(Math.random()*2+1)==1 ? -1.1 : 1.1,  1.0, -83*i]));
+    conesarr.push(new Cones(gl,        [Math.floor(Math.random()*2+1)==1 ? -1.1 : 1.1, -0.7, -109*i]));
+    trainarr.push(new Train(gl,        [Math.floor(Math.random()*2+1)==1 ? -1.1 : 1.1, -0.7, -117*i]));
+  }
+  for (var i = 1; i <= numOfFlies; i++) {
+    flyarr.push(new Fly(gl,       [Math.floor(Math.random()*2+1)==1 ?  1.1 : -1.1,  0.2, -201*i]));
+    bootsarr.push(new Boots(gl,   [Math.floor(Math.random()*2+1)==1 ?  1.1 : -1.1,  0.0, -189*i]));
+    magnetarr.push(new Magnet(gl, [Math.floor(Math.random()*2+1)==1 ?  1.1 : -1.1,  0.0,  -89*i]));
+  }
 }
 
 function drawScene(gl, deltaTime) {
-  gl.clearColor(0.0, 0.0, 0.0, 1.0);  
-  gl.clearDepth(1.0);                 
-  gl.enable(gl.DEPTH_TEST);           
-  gl.depthFunc(gl.LEQUAL);            
-
-
+  gl.clearColor(0.0, 0.0, 0.0, 1.0);
+  gl.clearDepth(1.0);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.LEQUAL);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-  const fieldOfView = 60 * Math.PI / 180;   
+  const fieldOfView = 60 * Math.PI / 180;
   const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
   const zNear = 0.1;
   const zFar = 10000.0;
   const projectionMatrix = mat4.create();
-
-  mat4.perspective(projectionMatrix,
-                   fieldOfView,
-                   aspect,
-                   zNear,
-                   zFar);
+  mat4.perspective(projectionMatrix, fieldOfView, aspect, zNear, zFar);
 
   var cameraMatrix = mat4.create();
   mat4.translate(cameraMatrix, cameraMatrix, cameraPos);
-  var cameraPosition = [
-    cameraMatrix[12],
-    cameraMatrix[13],
-    cameraMatrix[14],
-  ];
-
+  var cameraPosition = [cameraMatrix[12], cameraMatrix[13], cameraMatrix[14]];
   var up = [0, 1, 0];
   mat4.lookAt(cameraMatrix, cameraPosition, [cameraPos[0], cameraPos[1], cameraPos[2]-2.0], up);
-  
-  var viewMatrix = cameraMatrix;
+
   var viewProjectionMatrix = mat4.create();
-  mat4.multiply(viewProjectionMatrix, projectionMatrix, viewMatrix);
+  mat4.multiply(viewProjectionMatrix, projectionMatrix, cameraMatrix);
 
-  if(textureOn==1){
-  	if(grayscale==1){
-  		end.draw(gl, viewProjectionMatrix, grayscaleprogramInfo, deltaTime, textureOn, endtexture);
-    	ground.draw(gl, viewProjectionMatrix, grayscaleprogramInfo, deltaTime, textureOn, groundtexture);
- 		wall1.draw(gl, viewProjectionMatrix, grayscaleprogramInfo, deltaTime, textureOn, walltexture);
-  		wall2.draw(gl, viewProjectionMatrix, grayscaleprogramInfo, deltaTime, textureOn, walltexture);
-    	track1.draw(gl, viewProjectionMatrix, grayscaleprogramInfo, deltaTime, textureOn, metaltexture);
-    	track2.draw(gl, viewProjectionMatrix, grayscaleprogramInfo, deltaTime, textureOn, metaltexture);		
-    	bg.draw(gl, viewProjectionMatrix, grayscaleprogramInfo, deltaTime, textureOn, skytexture);
-  		surfer.draw(gl, viewProjectionMatrix, grayscaleprogramInfo, deltaTime, textureOn, redtexture);
-        police.draw(gl, viewProjectionMatrix, grayscaleprogramInfo, deltaTime, textureOn, bluetexture);
-  	}
-  	else{
-  		end.draw(gl, viewProjectionMatrix, textureprogramInfo, deltaTime, textureOn, endtexture);
-    	ground.draw(gl, viewProjectionMatrix, textureprogramInfo, deltaTime, textureOn, groundtexture);
-    	if(flashTime<10){
-    		wall1.draw(gl, viewProjectionMatrix, flashprogramInfo, deltaTime, textureOn, walltexture);
-  			wall2.draw(gl, viewProjectionMatrix, flashprogramInfo, deltaTime, textureOn, walltexture);
-    	}
-    	else{
- 			wall1.draw(gl, viewProjectionMatrix, textureprogramInfo, deltaTime, textureOn, walltexture);
-  			wall2.draw(gl, viewProjectionMatrix, textureprogramInfo, deltaTime, textureOn, walltexture);
-    	}
-    	track1.draw(gl, viewProjectionMatrix, textureprogramInfo, deltaTime, textureOn, metaltexture);
-    	track2.draw(gl, viewProjectionMatrix, textureprogramInfo, deltaTime , textureOn, metaltexture);
-    	bg.draw(gl, viewProjectionMatrix, textureprogramInfo, deltaTime, textureOn, skytexture);
-  		surfer.draw(gl, viewProjectionMatrix, textureprogramInfo, deltaTime, textureOn, redtexture);
-        police.draw(gl, viewProjectionMatrix, textureprogramInfo, deltaTime, textureOn, bluetexture);
-  	}
-  }
-  else{
-  	end.draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime, textureOn, endtexture);
-    bg.draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime, textureOn, skytexture);
-    ground.draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime, textureOn, groundtexture);
-    wall1.draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime, textureOn, walltexture);
-    wall2.draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime, textureOn, walltexture);
-    track1.draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime, textureOn, metaltexture);
-    track2.draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime, textureOn, metaltexture);
-    surfer.draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime, textureOn, redtexture);
-    police.draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime, textureOn, bluetexture);
-  }
+  const pi  = textureOn==1 ? (grayscale==1 ? grayscaleprogramInfo : textureprogramInfo) : nontextureprogramInfo;
+  const pi2 = (textureOn==1 && flashTime<10) ? flashprogramInfo : pi;
 
+  end.draw(gl, viewProjectionMatrix, pi, deltaTime, textureOn, endtexture);
+  ground.draw(gl, viewProjectionMatrix, pi, deltaTime, textureOn, groundtexture);
+  wall1.draw(gl, viewProjectionMatrix, pi2, deltaTime, textureOn, walltexture);
+  wall2.draw(gl, viewProjectionMatrix, pi2, deltaTime, textureOn, walltexture);
+  track1.draw(gl, viewProjectionMatrix, pi, deltaTime, textureOn, metaltexture);
+  track2.draw(gl, viewProjectionMatrix, pi, deltaTime, textureOn, metaltexture);
+  bg.draw(gl, viewProjectionMatrix, pi, deltaTime, textureOn, skytexture);
+  surfer.draw(gl, viewProjectionMatrix, pi, deltaTime, textureOn, redtexture);
+  police.draw(gl, viewProjectionMatrix, pi, deltaTime, textureOn, bluetexture);
   sun.draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime);
 
-  for(var i=0;i<numOfCoins;i++){
-    if(coinarr[i].taken==0){
-    	if(textureOn==0){
-      		coinarr[i].draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime, textureOn, goldtexture);
-    	}
-    	else{
-    		if(grayscale==0){
-      			coinarr[i].draw(gl, viewProjectionMatrix, textureprogramInfo, deltaTime, textureOn, goldtexture);
-    		}
-    		else{
-      			coinarr[i].draw(gl, viewProjectionMatrix, grayscaleprogramInfo, deltaTime, textureOn, goldtexture);
-    		}
-    	}
+  for (var i = 0; i < numOfCoins; i++) {
+    if (coinarr[i].taken == 0) {
+      coinarr[i].draw(gl, viewProjectionMatrix, textureOn==0 ? nontextureprogramInfo : (grayscale==1 ? grayscaleprogramInfo : textureprogramInfo), deltaTime, textureOn, goldtexture);
     }
   }
-
-  for(var i=0;i<numOfDownboards;i++){
-    if(textureOn==0){
-      downboardarr[i].draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime, textureOn, downtexture);
-      upboardarr[i].draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime, textureOn, woodtexture);
-      trainarr[i].draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime, textureOn, traintexture);
-    }
-    else{
-      if(grayscale==1){
-      	downboardarr[i].draw(gl, viewProjectionMatrix, grayscaleprogramInfo, deltaTime, textureOn, downtexture);
-	    upboardarr[i].draw(gl, viewProjectionMatrix, grayscaleprogramInfo, deltaTime, textureOn, woodtexture);
-	    trainarr[i].draw(gl, viewProjectionMatrix, grayscaleprogramInfo, deltaTime, textureOn, traintexture);
-      }
-      else{
-	    downboardarr[i].draw(gl, viewProjectionMatrix, textureprogramInfo, deltaTime, textureOn, downtexture);
-	    upboardarr[i].draw(gl, viewProjectionMatrix, textureprogramInfo, deltaTime, textureOn, woodtexture);
-	    trainarr[i].draw(gl, viewProjectionMatrix, textureprogramInfo, deltaTime, textureOn, traintexture);
-      }
-    }
-  	conesarr[i].draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime);
+  for (var i = 0; i < numOfDownboards; i++) {
+    const bpi = textureOn==0 ? nontextureprogramInfo : (grayscale==1 ? grayscaleprogramInfo : textureprogramInfo);
+    downboardarr[i].draw(gl, viewProjectionMatrix, bpi, deltaTime, textureOn, downtexture);
+    upboardarr[i].draw(gl, viewProjectionMatrix, bpi, deltaTime, textureOn, woodtexture);
+    trainarr[i].draw(gl, viewProjectionMatrix, bpi, deltaTime, textureOn, traintexture);
+    conesarr[i].draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime);
   }
-
-  for(var i=0;i<numOfFlies;i++){
-    if(flyarr[i].taken==0){
-      flyarr[i].draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime);
-    }
-    if(bootsarr[i].taken==0){
-      bootsarr[i].draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime);
-    }
-    if(magnetarr[i].taken==0){
-      magnetarr[i].draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime);	
-    }
+  for (var i = 0; i < numOfFlies; i++) {
+    if (flyarr[i].taken==0)    flyarr[i].draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime);
+    if (bootsarr[i].taken==0)  bootsarr[i].draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime);
+    if (magnetarr[i].taken==0) magnetarr[i].draw(gl, viewProjectionMatrix, nontextureprogramInfo, deltaTime);
   }
-
 }
-
 
 function initShaderProgram(gl, vsSource, fsSource) {
-  const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+  const vertexShader   = loadShader(gl, gl.VERTEX_SHADER, vsSource);
   const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
-
-
-  const shaderProgram = gl.createProgram();
-  gl.attachShader(shaderProgram, vertexShader);
-  gl.attachShader(shaderProgram, fragmentShader);
-  gl.linkProgram(shaderProgram);
-
-
-  if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
-    alert('Unable to initialize the shader program: ' + gl.getProgramInfoLog(shaderProgram));
-    return null;
-  }
-
-  return shaderProgram;
-}
-
-function loadShader(gl, type, source) {
-  const shader = gl.createShader(type);
-
-
-  gl.shaderSource(shader, source);
-
-  gl.compileShader(shader);
-
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    alert('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
-    gl.deleteShader(shader);
-    return null;
-  }
-
-  return shader;
-}
-
-function loadTexture(gl, url) {
-  const texture = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  const level = 0;
-  const internalFormat = gl.RGBA;
-  const width = 1;
-  const height = 1;
-  const border = 0;
-  const srcFormat = gl.RGBA;
-  const srcType = gl.UNSIGNED_BYTE;
-  const pixel = new Uint8Array([0, 0, 255, 255]);  // opaque blue
-  gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
-                width, height, border, srcFormat, srcType,
-                pixel);
-
-  const image = new Image();
-  image.onload = function() {
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,gl.UNSIGNED_BYTE, image);
-    if (isPowerOf2(image.width) && isPowerOf2(image.height)) {
-       // Yes, it's a power of 2. Generate mips.
-       gl.generateMipmap(gl.TEXTURE_2D);
-    } else {
-       // No, it's not a power of 2. Turn off mips and set
-       // wrapping to clamp to edge
-       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    }
-  };
-  image.src = url;
-  return texture;
-}
+  
